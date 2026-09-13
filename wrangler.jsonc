@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "site-talk",
+  "main": "apps/worker/src/index.ts",
+  "compatibility_date": "2026-09-13",
+  "assets": { "directory": "./dist", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*"] },
+  "d1_databases": [{ "binding": "DB", "database_name": "site-talk", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "database/migrations" }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "site-talk-files" }],
+  "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "ChatRoom" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChatRoom"] }],
+  "triggers": { "crons": ["50 14 * * *"] },
+  "observability": { "enabled": true },
+  "vars": { "OPENAI_MODEL": "gpt-4.1-mini" }
+}

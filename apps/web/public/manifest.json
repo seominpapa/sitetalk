@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "Site Talk",
+  "short_name": "SiteTalk",
+  "description": "건설현장 업무 협의와 지식 기록",
+  "lang": "ko",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f9faf5",
+  "theme_color": "#293e36",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
