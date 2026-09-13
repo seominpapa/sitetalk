@@ -169,7 +169,7 @@ AI는 요약·결정사항·Action Items·키워드만 생성합니다. 원문, 
 
 ## GitHub → Cloudflare 배포 방법
 
-비공개 GitHub 저장소 [seominpapa/sitetalk](https://github.com/seominpapa/sitetalk)를 생성하고 origin을 연결했습니다. 현재 문서 기준 소스 commit/push·Actions 실행은 아직 입증되지 않았습니다. 실제 D1 ID, R2 활성화·버킷, Worker Secrets, 운영 계정을 준비합니다. GitHub Actions에는 `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`를 Secrets로 설정합니다. 토큰에는 선택한 계정에서 Worker 배포·D1 migration 등 워크플로가 실제 사용하는 최소 권한을 부여합니다.
+비공개 GitHub 저장소 [seominpapa/sitetalk](https://github.com/seominpapa/sitetalk)를 생성하고 origin 연결·첫 소스 커밋 `9712e99` 업로드를 확인했습니다. [최초 Actions 실행](https://github.com/seominpapa/sitetalk/actions/runs/34743100950)은 의존성 설치·타입검사·단위시험·빌드를 통과했으나 브라우저 시험 1개가 실패해 배포가 생략됐습니다. 이후 실행 결과와 실제 배포는 별도로 확인해야 합니다. 실제 D1 ID, R2 활성화·버킷, Worker Secrets, 운영 계정 준비도 필요합니다. GitHub Actions에는 `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`를 Secrets로 설정합니다. 토큰에는 선택한 계정에서 Worker 배포·D1 migration 등 워크플로가 실제 사용하는 최소 권한을 부여합니다.
 
 `.github/workflows/deploy.yml`은 PR과 main push에서 의존성 설치 → typecheck → 단위·통합 시험 → build → 로컬 D1·테스트 사용자 준비 → 브라우저 E2E를 실행합니다. main push 또는 main에서 실행한 workflow_dispatch는 시험 성공 뒤 `production` environment에서 원격 migration → Worker 배포를 수행합니다. 토큰·account ID 누락과 D1 자리표시자는 배포 전에 실패합니다. GitHub의 production environment 승인 규칙이 있다면 그 규칙도 적용됩니다. 워크플로 파일 존재나 로컬 build 성공만으로 자동 배포 성공을 판정하지 않습니다.
 
@@ -217,6 +217,8 @@ D1 batch를 사용해 메시지·첨부 metadata, 종료 정보·archive job을 
 
 2026-09-13 최종 검증: `npm test` 33/33, `npm run typecheck`, `npm run build`, 확장된 브라우저 E2E 전체 4/4(6.7초)가 통과했습니다. 로컬 Worker/D1/R2 에뮬레이터에서 두 사용자 실시간 메시지, 실제 WebSocket 종료·offline 중 55개 메시지·재연결 후 전체 순서 복구, Shift+Enter, 합성 clipboard 이미지·확대·drag/drop, PDF 다운로드, MIME 위장 파일 다운로드 강제, 검색, 종료·쓰기 차단, 읽음 위치, 초대 권한을 확인했습니다. 브라우저 Push unsubscribe가 실패해도 서버 로그아웃은 완료되도록 RED→GREEN으로 검증했습니다.
 
-합성 ClipboardEvent는 실제 OS Cmd+V 검증을 대신하지 않습니다. `npm audit`은 취약점 0건이며, 비공개 GitHub 저장소 생성·origin 연결과 로컬 deploy dry-run도 확인했습니다. 배포·실제 Push 수신·성공한 실제 OpenAI/Cron/R2 아카이브는 아직 없습니다. 소스 commit/push, 원격 CI/CD 성공, 전체 코드 80% coverage 달성도 입증되지 않았습니다. 일부 Push/Archive 시험의 coverage를 전체 앱 coverage로 해석하지 않습니다.
+최초 GitHub E2E에서 느린 방 목록 갱신이 다음 메시지 전송 잠금을 유지하는 경합을 발견했습니다. 메시지 저장 응답 이후 목록 갱신을 비동기로 분리했고, 목록 응답 1.5초 지연 회귀 검사를 포함한 로컬 전체 E2E 4/4(6.4초), 단위·통합 시험 33/33, typecheck·build를 다시 통과했습니다. 수정의 원격 CI 결과는 별도 확인 대상입니다.
+
+합성 ClipboardEvent는 실제 OS Cmd+V 검증을 대신하지 않습니다. `npm audit`은 취약점 0건이며, 비공개 GitHub 저장소 생성·origin 연결·첫 소스 commit/push와 로컬 deploy dry-run도 확인했습니다. 배포·실제 Push 수신·성공한 실제 OpenAI/Cron/R2 아카이브는 아직 없습니다. 원격 CI/CD 성공, 전체 코드 80% coverage 달성도 입증되지 않았습니다. 일부 Push/Archive 시험의 coverage를 전체 앱 coverage로 해석하지 않습니다.
 
 음성·영상 통화, RAG, Vector DB, 번역·OCR, 문서 분석, AI 챗봇, 결재·일정·Todo, Tauri·네이티브 앱은 MVP 범위에 포함하지 않습니다.

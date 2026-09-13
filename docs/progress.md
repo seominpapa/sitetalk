@@ -88,13 +88,13 @@
 - 변경 파일: `tests/*`, `apps/web/tests/*`, `playwright.config.ts`, `.github/workflows/deploy.yml`, `README.md`, `docs/*`.
 - 시험: 2026-09-13 `npm test` 33/33, `npm run typecheck`, `npm run build`, 확장된 Playwright 전체 4/4(6.7초) 통과. `npm audit` 취약점 0건, 최종 deploy dry-run 통과. 상세 범위는 acceptance 문서 참조.
 - 남은 작업: 실제 배포·최종 요구사항 감사·전체 coverage 확인·CI/CD 성공 증거.
-- 발견 문제: isolated Push/Archive coverage를 전체 앱 80% coverage로 주장할 수 없습니다. 현재 전체 80% 조건은 미입증입니다.
+- 발견 문제: 최초 GitHub E2E에서 방 목록 응답 지연이 메시지 전송 잠금을 유지하는 경합을 확인했습니다. 목록 갱신을 메시지 전송 완료와 분리한 후 1.5초 지연 회귀 검사 포함 로컬 전체 4/4(6.4초), 단위·통합 33/33, typecheck·build를 재통과했습니다. 원격 재검증은 별도입니다. isolated Push/Archive coverage를 전체 앱 80% coverage로 주장할 수 없습니다. 현재 전체 80% 조건은 미입증입니다.
 
 ## 외부 환경에서 남은 사항
 
 1. 계정 구독 화면에서 Workers Paid 활성·R2 미가입을 재확인했습니다. R2 사용량 과금 활성화 승인과 Cloudflare 배포 인증·리소스 준비가 필요합니다.
 2. OpenAI 로컬 키 설정 완료; 계정 잔액 충전 확인과 원격 Secrets·VAPID 설정이 남았습니다. 실제 호출은 충전 전 중단합니다.
-3. 비공개 [GitHub 저장소](https://github.com/seominpapa/sitetalk) 생성·origin 연결은 확인했습니다. 운영 계정 발급·소스 commit/push·Actions 성공 증거는 남았습니다.
+3. 비공개 [GitHub 저장소](https://github.com/seominpapa/sitetalk) 생성·origin 연결과 첫 커밋 `9712e99` push를 확인했습니다. 최초 CI는 단위·빌드까지 통과했으나 브라우저 1개 실패로 배포가 생략됐습니다. 운영 계정 발급·Actions 전체 성공 증거는 남았습니다.
 4. 배포환경 두 사용자·사진·PDF·Push·종료·Cron 전체 검증.
 
 위 항목의 증거가 확보되기 전에는 전체 MVP를 완료로 표시하지 않습니다.

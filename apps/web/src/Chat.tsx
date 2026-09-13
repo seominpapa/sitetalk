@@ -93,7 +93,8 @@ export function Chat({ id, user, refreshRooms, back }: { id: string; user: User;
     if (content.length > 10000) { setError('메시지는 10,000자 이내로 작성해 주세요.'); return; }
     sendLock.current = true; setSending(true); setError('');
     const payload = retry.current?.content === content ? retry.current : { content, client_id: crypto.randomUUID() }; retry.current = payload;
-    try { const message = await api<Message>(`/rooms/${id}/messages`, { method: 'POST', body: JSON.stringify(payload) }); if (!alive.current) return; retry.current = null; nearBottom.current = true; setMessages((current) => mergeMessages(current, [message])); setDraft((current) => current.trim() === content ? '' : current); await refreshRooms(); }
+    // Sidebar refresh must not keep the composer locked after message delivery.
+    try { const message = await api<Message>(`/rooms/${id}/messages`, { method: 'POST', body: JSON.stringify(payload) }); if (!alive.current) return; retry.current = null; nearBottom.current = true; setMessages((current) => mergeMessages(current, [message])); setDraft((current) => current.trim() === content ? '' : current); void refreshRooms(); }
     catch (error) { if (alive.current) setError(errorMessage(error)); } finally { sendLock.current = false; if (alive.current) setSending(false); }
   }
   async function files(list: FileList | File[] | null) {

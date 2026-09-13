@@ -72,7 +72,7 @@
 | `npm audit` | 취약점 0건 | 현재 설치 의존성 audit 결과 |
 | Wrangler deploy dry-run | 4.131.1에서 통과 | 로컬 점검, 인증·원격 배포 증거 아님 |
 | 전체 coverage ≥80% | 미입증 | 일부 모듈 coverage를 전체 coverage로 대체하지 않음 |
-| GitHub Actions → Cloudflare 배포 | 비공개 저장소 생성·origin 연결 확인; commit/push/Actions/배포 미입증 | [seominpapa/sitetalk](https://github.com/seominpapa/sitetalk) |
+| GitHub Actions → Cloudflare 배포 | 비공개 저장소·origin·첫 커밋 push 확인. 최초 CI 단위/빌드 통과, E2E 1개 실패로 배포 생략 | [최초 실행 기록](https://github.com/seominpapa/sitetalk/actions/runs/34743100950); 전체 CI·실제 배포는 미완료 |
 | 실제 Web Push / OpenAI / R2 Archive | Push 미검증; 실제 AI는 잔액 부족 429; 성공 Archive 없음 | 충전 전 추가 실제 AI 호출 중단; R2 활성화·인증 승인 대기 |
 
 완료 판정: 전체 사용자 흐름의 로컬·원격 필수 행 및 보안·동시성 확인이 충족되고, 요청된 문서·배포·검증 증거가 모두 확보되어야 합니다. 현재는 완료 조건을 충족하지 않았습니다.

@@ -16,6 +16,14 @@ async function data(response: Awaited<ReturnType<APIRequestContext['get']>>) {
 test('two users: room, realtime, paste image, PDF download, search, close, access control', async ({browser}) => {
   const a=await browser.newContext(), b=await browser.newContext(), c=await browser.newContext();
   const pa=await a.newPage(), pb=await b.newPage(), pc=await c.newPage();
+  const rateLimited:string[]=[];
+  for(const page of [pa,pb,pc]) page.on('response',response=>{
+    const path=new URL(response.url()).pathname;
+    if(response.status()===429 && path.startsWith('/api/')) {
+      const request=`${response.request().method()} ${path} 429`;
+      rateLimited.push(request); console.warn('E2E_API_RATE_LIMIT',request);
+    }
+  });
   await pb.addInitScript(() => {
     const NativeWebSocket = window.WebSocket;
     (window as any).__siteTalkSockets = [];
@@ -40,14 +48,25 @@ test('two users: room, realtime, paste image, PDF download, search, close, acces
   await pa.getByRole('textbox',{name:'메시지 입력'}).press('Enter');
   await expect(pb.getByText('발파시간이 16:30으로 변경됐습니다.',{exact:true})).toBeVisible();
   await pb.getByRole('textbox',{name:'메시지 입력'}).fill('통제 범위 확인했습니다.');
+  let delayRoomRefresh=true;
+  await pb.route('**/api/rooms',async route=>{
+    const response=await route.fetch();
+    if(delayRoomRefresh) await new Promise(resolve=>setTimeout(resolve,1500));
+    await route.fulfill({response});
+  });
+  const previousResponse=pb.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===`/api/rooms/${roomId}/messages`,{timeout:5000});
   await pb.getByRole('button',{name:'전송',exact:true}).click();
+  expect((await previousResponse).status(),'Initial message POST must succeed before the next Enter').toBe(201);
   await expect(pa.getByText('통제 범위 확인했습니다.',{exact:true})).toBeVisible();
   const composer=pb.getByRole('textbox',{name:'메시지 입력'});
   await composer.fill('ShiftEnter 첫 줄'); await composer.press('Shift+Enter'); await composer.pressSequentially('ShiftEnter 둘째 줄');
   await expect(composer).toHaveValue('ShiftEnter 첫 줄\nShiftEnter 둘째 줄');
   await expect(pa.getByText('ShiftEnter 첫 줄',{exact:true})).toHaveCount(0);
+  const multilineResponse=pb.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname===`/api/rooms/${roomId}/messages`,{timeout:5000});
   await composer.press('Enter');
+  expect((await multilineResponse).status(),'Multiline message POST must succeed, including under slow sidebar refresh').toBe(201);
   await expect(pa.locator('.message-content').filter({hasText:'ShiftEnter 첫 줄'})).toHaveText('ShiftEnter 첫 줄\nShiftEnter 둘째 줄');
+  delayRoomRefresh=false;
   const png=readFileSync('apps/web/public/icon-192.png');
   await pa.getByRole('textbox',{name:'메시지 입력'}).evaluate((element,bytes) => {
     const clipboard=new DataTransfer(); clipboard.items.add(new File([new Uint8Array(bytes)],'현장사진.png',{type:'image/png'}));
@@ -111,6 +130,7 @@ test('two users: room, realtime, paste image, PDF download, search, close, acces
   await pa.screenshot({path:'test-results/site-talk-desktop.png',fullPage:true});
   await pb.setViewportSize({width:390,height:844}); await pb.screenshot({path:'test-results/site-talk-mobile.png',fullPage:true});
   expect(await pb.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+  expect(rateLimited,'Normal room, upload and reconnect activity must not hit the user API rate limit').toEqual([]);
   await a.close(); await b.close(); await c.close();
 });
 
