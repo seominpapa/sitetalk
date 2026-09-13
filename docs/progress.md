@@ -94,7 +94,7 @@
 
 1. 계정 구독 화면에서 Workers Paid 활성·R2 미가입을 재확인했습니다. R2 사용량 과금 활성화 승인과 Cloudflare 배포 인증·리소스 준비가 필요합니다.
 2. OpenAI 로컬 키 설정 완료; 계정 잔액 충전 확인과 원격 Secrets·VAPID 설정이 남았습니다. 실제 호출은 충전 전 중단합니다.
-3. 비공개 [GitHub 저장소](https://github.com/seominpapa/sitetalk) 생성·origin 연결과 첫 커밋 `9712e99` push를 확인했습니다. 최초 CI는 단위·빌드까지 통과했으나 브라우저 1개 실패로 배포가 생략됐습니다. 운영 계정 발급·Actions 전체 성공 증거는 남았습니다.
+3. 비공개 [GitHub 저장소](https://github.com/seominpapa/sitetalk)에 수정 커밋 `c87e53b` push를 확인했습니다. [Actions 재실행](https://github.com/seominpapa/sitetalk/actions/runs/34743470826)은 전체 테스트 job을 통과했고, 배포는 `Cloudflare API token is not configured`로 중단됐습니다. 저장소 Secrets 등록·운영 계정 발급·실제 배포 성공 증거는 남았습니다.
 4. 배포환경 두 사용자·사진·PDF·Push·종료·Cron 전체 검증.
 
 위 항목의 증거가 확보되기 전에는 전체 MVP를 완료로 표시하지 않습니다.
