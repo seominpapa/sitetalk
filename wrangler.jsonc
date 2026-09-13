@@ -1,10 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "site-talk",
+  "account_id": "1531be39715b5ebfec7472624d91e51f",
   "main": "apps/worker/src/index.ts",
   "compatibility_date": "2026-09-13",
   "assets": { "directory": "./dist", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*"] },
-  "d1_databases": [{ "binding": "DB", "database_name": "site-talk", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "database/migrations" }],
+  "d1_databases": [{ "binding": "DB", "database_name": "site-talk", "database_id": "b274b206-a838-4ae2-8a05-30a475682abe", "migrations_dir": "database/migrations" }],
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "site-talk-files" }],
   "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "ChatRoom" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChatRoom"] }],

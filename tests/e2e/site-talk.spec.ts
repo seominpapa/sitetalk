@@ -14,6 +14,8 @@ async function data(response: Awaited<ReturnType<APIRequestContext['get']>>) {
   const result=await response.json(); expect(result, JSON.stringify(result)).toHaveProperty('success',true); return result.data;
 }
 test('two users: room, realtime, paste image, PDF download, search, close, access control', async ({browser}) => {
+  // 55 sequential real-network writes alone take ~75s; retain the 90s local budget.
+  if (process.env.E2E_BASE_URL?.startsWith('https://')) test.setTimeout(180_000);
   const a=await browser.newContext(), b=await browser.newContext(), c=await browser.newContext();
   const pa=await a.newPage(), pb=await b.newPage(), pc=await c.newPage();
   const rateLimited:string[]=[];

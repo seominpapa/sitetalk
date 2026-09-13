@@ -2,7 +2,7 @@
 
 Construction Site Communication — 건설현장의 목적 있는 대화를 만들고, 협의가 끝나면 원문과 결론을 현장 지식으로 보존하는 실시간 업무 메신저입니다.
 
-현재는 로컬 구현·검증 단계입니다. Cloudflare 배포와 실제 브라우저 Push 수신은 미검증이며, 실제 OpenAI 요청은 잔액 부족 오류로 실패했습니다. 요구사항별 증거는 [수용 기준](docs/acceptance.md), 단계별 변경·시험 기록은 [진행 기록](docs/progress.md)에 정리합니다.
+[Site Talk](https://site-talk.sjkwak300.workers.dev)을 Cloudflare에 배포했고 원격 브라우저 E2E 4/4(3.0분)를 통과했습니다. 실제 브라우저 Push 수신·OS 클립보드 입력·AI 아카이브 성공은 아직 입증되지 않았습니다. 실제 OpenAI 요청은 잔액 부족 오류로 실패했습니다. 요구사항별 증거는 [수용 기준](docs/acceptance.md), 단계별 변경·시험 기록은 [진행 기록](docs/progress.md)에 정리합니다.
 
 ## Architecture
 
@@ -69,11 +69,13 @@ npx wrangler login
 npx wrangler whoami
 ```
 
-현재 `wrangler.jsonc`의 D1 ID는 `00000000-0000-0000-0000-000000000000` 자리표시자입니다. 실제 리소스를 생성한 뒤 ID를 바꿔야 합니다. Workers Paid 활성·R2 미가입은 계정 화면에서 재확인했지만, Wrangler는 아직 인증되지 않았습니다. 인증 화면 열기는 Workers/D1 지속 권한 허용에 관한 자동 승인 검토에 막혀 사용자 승인을 요청했고 CLI OAuth 대기는 만료되었습니다. R2 활성화도 승인을 요청한 상태입니다. 승인·인증 완료를 확인한 뒤 배포를 이어갑니다.
+Workers Paid 계정에서 사용자 승인으로 Workers/D1 범위의 Wrangler 인증을 완료했습니다. R2도 약관과 반복 초과 사용량 과금에 대한 명시적 승인 후 활성화를 확인했습니다. `wrangler.jsonc`에는 대상 `account_id`와 실제 D1 ID를 고정했습니다.
 
-Wrangler 4.131.1의 deploy dry-run은 통과했습니다. 이는 로컬 번들·바인딩 구성 점검이며 Cloudflare 인증이나 원격 리소스 생성·배포 성공을 뜻하지 않습니다.
+배포 URL은 `https://site-talk.sjkwak300.workers.dev`이며 VAPID 등록 후 확인한 활성 버전은 `036c5e8b-6dfa-41a5-b395-1f2b02a1fd97`입니다. Worker·D1·DO·비공개 R2 바인딩과 Cron 배포, health 200까지 확인했습니다. 이는 GitHub Actions 자동 배포 성공이나 실제 Push·AI 처리 성공과는 별도 증거입니다.
 
 ## D1 생성 방법
+
+현재 `site-talk` D1은 APAC에 생성되어 있고 ID는 `b274b206-a838-4ae2-8a05-30a475682abe`입니다. 최초 migration 23개 명령 적용과 `messages_active_room` trigger를 확인했습니다. 아래 생성 명령은 새로운 환경을 구성할 때의 참고이며 기존 DB를 다시 만들 필요는 없습니다.
 
 ```sh
 npx wrangler d1 create site-talk
@@ -89,7 +91,7 @@ npm run db:remote
 
 ## R2 생성 방법
 
-R2가 비활성 상태라면 대시보드에서 결제 조건을 검토하고 먼저 활성화합니다. 활성화는 구독·결제 설정을 바꾸는 작업입니다.
+현재 R2는 활성화되어 있으며 `site-talk-files`를 APAC·Standard·비공개로 생성했습니다. `r2.dev` 퍼블릭 액세스 비활성도 확인했습니다. 아래 명령은 새로운 환경 구성 시 참고입니다. 다른 계정에서 R2가 비활성 상태라면 결제 조건을 검토하고 활성화해야 합니다.
 
 ```sh
 npx wrangler r2 bucket create site-talk-files
@@ -118,6 +120,8 @@ node scripts/create-user.mjs --email admin@company.com --name "관리자 이름"
 
 `--company`, `--department`도 선택할 수 있습니다. `--remote`를 생략하면 로컬 D1에만 발급합니다. 무작위 비밀번호는 stdout에 출력하지 않고 Git에서 제외된 `.wrangler/accounts/{uuid}.json`에 권한 0600으로 저장합니다. 발급 결과가 `pending`이면 원격 DB 상태를 확인하기 전 무작정 재시도하지 않습니다. 로그인 정보는 사용자에게 안전한 경로로 전달하고, 로컬 `test:seed`를 운영 발급에 사용하지 않습니다.
 
+배포환경 관리자 1명과 검증용 사용자 2명을 발급하고 원격 관리자 API 로그인·로그아웃 200을 확인했습니다. 비밀번호는 Git에서 제외된 0600 파일로만 전달하며 이 문서에 포함하지 않습니다. 원격 시험은 `E2E_BASE_URL`과 별도 `E2E_CREDENTIALS_FILE`을 사용합니다.
+
 ## Web Push VAPID 설정
 
 사용자 단말의 알림 허용 동작으로 Service Worker Push 구독을 생성합니다. 구독은 D1에 보관하고 현재 방이 보이지 않는 알림 활성 참여자에게 발송합니다. 지원 endpoint를 검증하고 VAPID 서명·RFC 8291 암호화를 사용합니다.
@@ -129,6 +133,8 @@ node scripts/vapid.mjs
 키는 콘솔에 출력하지 않고 Git에서 제외된 `.wrangler/vapid.env`에 권한 0600으로 저장합니다. 파일이 이미 있으면 덮어쓰지 않고 실패합니다. 해당 값을 안전한 로컬 환경/Cloudflare Secrets의 `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`로 등록하고 `VAPID_SUBJECT`를 별도 설정하세요. 이 파일은 자동으로 Worker에 주입되지 않습니다. subject는 관리 가능한 연락처의 `mailto:` 주소 또는 HTTPS URL입니다. 기존 Push 구독은 애플리케이션 서버 키에 연결되므로 운영 중 키를 변경하면 재구독이 필요합니다.
 
 실제 Push는 브라우저·OS 권한과 HTTPS가 필요합니다. 로컬 예외 origin 동작과 실제 HTTPS 배포 동작을 각각 검증해야 합니다. 지원하지 않는 브라우저에서는 UI가 상태를 표시합니다. iOS 등 설치·권한 조건이 있는 환경은 해당 기기에서 최종 확인해야 합니다.
+
+배포 Worker에는 `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` 세 Secret 이름 등록을 확인했습니다. Secret 등록은 실제 Push 수신 성공의 증거가 아닙니다.
 
 ## Cloudflare Secrets 설정
 
@@ -157,7 +163,7 @@ Cron에는 세션·rate-limit 만료 데이터 정리도 포함됩니다. 테스
 
 ## OpenAI API 및 Markdown Archive
 
-Cloudflare와 별도의 OpenAI API 사용 권한·과금 설정이 필요합니다. 현재 기본 모델은 설정 파일의 `gpt-4.1-mini`입니다. 사용자 승인으로 생성한 API 키는 안전한 로컬 선택 절차를 통해 Git에서 제외된 `.dev.vars`에 권한 0600으로 저장했습니다. 키 값은 문서·로그에 기록하지 않습니다. 실제 요약 요청은 HTTP 429로 실패했고, 진단에서 `code: credit_balance_exhausted`, `type: insufficient_quota`를 확인했습니다. 잔액 충전이 확인되기 전에는 추가 실제 요청을 보내지 않습니다. 성공한 실제 요약·Cron→R2 아카이브는 아직 없습니다. 원격 Cloudflare Secret 등록도 별도 작업입니다.
+Cloudflare와 별도의 OpenAI API 사용 권한·과금 설정이 필요합니다. 현재 기본 모델은 설정 파일의 `gpt-4.1-mini`입니다. 사용자 승인으로 생성한 API 키는 안전한 로컬 선택 절차를 통해 Git에서 제외된 `.dev.vars`에 권한 0600으로 저장했습니다. 키 값은 문서·로그에 기록하지 않습니다. 실제 요약 요청은 HTTP 429로 실패했고, 진단에서 `code: credit_balance_exhausted`, `type: insufficient_quota`를 확인했습니다. 잔액 충전이 확인되기 전에는 추가 실제 요청을 보내지 않습니다. 배포 Worker의 `OPENAI_API_KEY`는 반복 실패·재시도 소모를 막기 위해 아직 등록하지 않았습니다. 성공한 실제 요약·Cron→R2 아카이브는 아직 없습니다.
 
 키 미설정 환경에서는 작업의 시도 횟수를 소비하지 않고 처리를 건너뜁니다. 키가 있지만 API에서 과금 오류를 반환하는 경우는 실패 작업이므로, 설정 후에도 계정 잔액·권한을 확인해야 합니다.
 
@@ -169,7 +175,7 @@ AI는 요약·결정사항·Action Items·키워드만 생성합니다. 원문, 
 
 ## GitHub → Cloudflare 배포 방법
 
-비공개 GitHub 저장소 [seominpapa/sitetalk](https://github.com/seominpapa/sitetalk)에 소스와 수정 커밋 `c87e53b` 업로드를 확인했습니다. [수정 후 Actions 실행](https://github.com/seominpapa/sitetalk/actions/runs/34743470826)은 설치·타입검사·단위시험·빌드·전체 브라우저 시험을 통과했습니다. 배포 단계는 `Cloudflare API token is not configured`로 설정 검사에서 중단됐으며 원격 migration·Worker 배포는 실행되지 않았습니다. GitHub 저장소 Secrets는 비어 있습니다. 실제 D1 ID, R2 활성화·버킷, Worker Secrets, 운영 계정 준비도 필요합니다. GitHub Actions에는 `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`를 Secrets로 설정합니다. 토큰에는 선택한 계정에서 Worker 배포·D1 migration 등 워크플로가 실제 사용하는 최소 권한을 부여합니다.
+비공개 GitHub 저장소 [seominpapa/sitetalk](https://github.com/seominpapa/sitetalk)의 수정 커밋 `c87e53b`에 대한 [Actions 실행](https://github.com/seominpapa/sitetalk/actions/runs/34743470826)은 설치·타입검사·단위시험·빌드·전체 브라우저 시험을 통과했습니다. 해당 과거 실행의 deploy job은 `Cloudflare API token is not configured`로 중단됐습니다. 이후 Wrangler로 원격 migration·최초 Worker 배포를 완료했지만 이는 자동 배포가 아닙니다. GitHub에는 `CLOUDFLARE_ACCOUNT_ID`를 등록했고 `CLOUDFLARE_API_TOKEN`은 아직 없어 CI/CD 전체는 미완료입니다. 토큰에는 선택한 계정에서 Worker 배포·D1 migration 등 워크플로가 실제 사용하는 최소 권한을 부여합니다.
 
 `.github/workflows/deploy.yml`은 PR과 main push에서 의존성 설치 → typecheck → 단위·통합 시험 → build → 로컬 D1·테스트 사용자 준비 → 브라우저 E2E를 실행합니다. main push 또는 main에서 실행한 workflow_dispatch는 시험 성공 뒤 `production` environment에서 원격 migration → Worker 배포를 수행합니다. 토큰·account ID 누락과 D1 자리표시자는 배포 전에 실패합니다. GitHub의 production environment 승인 규칙이 있다면 그 규칙도 적용됩니다. 워크플로 파일 존재나 로컬 build 성공만으로 자동 배포 성공을 판정하지 않습니다.
 
@@ -219,6 +225,8 @@ D1 batch를 사용해 메시지·첨부 metadata, 종료 정보·archive job을 
 
 최초 GitHub E2E에서 느린 방 목록 갱신이 다음 메시지 전송 잠금을 유지하는 경합을 발견했습니다. 메시지 저장 응답 이후 목록 갱신을 비동기로 분리했고, 목록 응답 1.5초 지연 회귀 검사를 포함한 로컬 전체 E2E 4/4(6.4초), 단위·통합 시험 33/33, typecheck·build를 다시 통과했습니다. 수정 커밋의 GitHub 테스트 job도 통과했으며 배포 job만 인증 설정 부족으로 중단됐습니다.
 
-합성 ClipboardEvent는 실제 OS Cmd+V 검증을 대신하지 않습니다. `npm audit`은 취약점 0건이며, 비공개 GitHub 저장소·소스 push·원격 테스트 job 통과와 로컬 deploy dry-run도 확인했습니다. 배포·실제 Push 수신·성공한 실제 OpenAI/Cron/R2 아카이브는 아직 없습니다. CI/CD 전체 성공과 전체 코드 80% coverage 달성도 입증되지 않았습니다. 일부 Push/Archive 시험의 coverage를 전체 앱 coverage로 해석하지 않습니다.
+Cloudflare 배포환경에서도 브라우저 E2E 전체 4/4(3.0분)를 통과했습니다. 두 사용자 채팅·55개 재연결 복구·이미지/PDF 공유·검색·종료·권한·로그아웃을 실제 원격 D1/R2/DO에서 확인했습니다. 최초 원격 실행은 55개 순차 요청의 각 약 1.3초 왕복으로 첫 시험의 90초 예산을 초과했습니다. HTTPS 첫 시험만 총 180초로 늘리고 기능 assertion을 유지해 재검증했으며 429는 없었습니다.
+
+합성 ClipboardEvent는 실제 OS Cmd+V 검증을 대신하지 않습니다. `npm audit`은 취약점 0건이며 GitHub 테스트 job, 실제 Cloudflare migration·배포·health 200·원격 E2E를 확인했습니다. 실제 Push 수신·성공한 실제 OpenAI/Cron/R2 아카이브는 아직 없습니다. CI/CD 전체 성공과 전체 코드 80% coverage 달성도 입증되지 않았습니다. 일부 Push/Archive 시험의 coverage를 전체 앱 coverage로 해석하지 않습니다.
 
 음성·영상 통화, RAG, Vector DB, 번역·OCR, 문서 분석, AI 챗봇, 결재·일정·Todo, Tauri·네이티브 앱은 MVP 범위에 포함하지 않습니다.
