@@ -194,3 +194,9 @@
 - 도메인 준비: 같은 계정의 활성 `seominpapa.com` zone을 확인하고 Custom Domain changeset에서 `sitetalk.seominpapa.com` 추가 외 기존 도메인 제거·수정·충돌이 없음을 확인했습니다. `workers_dev: true`로 기존 주소를 유지합니다. 이 미리보기는 등록·HTTPS 성공 증거가 아닙니다.
 - 다음 단계: 사용자가 main push 및 배포까지 승인했습니다. 커밋·push → 해당 SHA의 Actions 시험/배포 → 새 도메인 HTTPS·로그인·담당자 토글·권한 및 기존 요약/원문 보존을 확인하고 비공개 릴리스 기록에 남깁니다. 현재 항목은 실제 배포 성공을 주장하지 않습니다.
 - 복구/미검증: 구버전 Worker는 OFF를 무시하므로 롤백 전 Cron 중지, 추가 컬럼 유지가 필요합니다. 새 origin 재로그인·Push 재허용 필요. 예약 시각의 실제 Cron·실제 단말 Push는 별도이며 이번 검증은 추가 유료 요약을 호출하지 않습니다.
+
+### 도메인 최초 등록과 CI 후속 조정
+
+- `da177bd` main push의 Actions `39568805673`에서 단위·통합 112개·브라우저 26개 통과(운영 opt-in 2건 제외). Worker 코드·assets·기존 주소·Cron은 배포됐으나 Custom Domain 갱신 API가 code 10002로 실패했습니다. 최초 등록 후 재시도도 같은 결과로, 이를 자동 배포 전체 성공으로 보고하지 않습니다.
+- 충돌 미리보기 재확인 후 기존 Cloudflare 로그인으로 새 도메인만 등록했습니다. 기존 DNS/다른 origin 덮어쓰기는 false로 강제했으며 같은 Worker 연결·활성 인증서를 확인했습니다. Cloudflare 공개 DNS와 Google DNS의 A 응답 및 해당 주소로 인증서 검증을 유지한 HTTPS health 200을 확인했습니다. 이 컴퓨터의 이전 NXDOMAIN 캐시는 별도입니다.
+- 최소 조정: 도메인은 Cloudflare Custom Domain으로 유지하고 Wrangler `routes` 선언만 제거합니다. 설치된 Wrangler의 trigger 배포 코드를 확인해 custom-domain 목록이 비어 있으면 해당 갱신 API를 호출하지 않음을 확인했습니다. CI에 기존·신규 주소 health 확인을 추가해 연결 실패를 숨기지 않습니다. 토큰 권한·Secret은 변경하지 않습니다. 조정 커밋의 CI 및 운영 UI 결과는 후속 비공개 릴리스 기록으로 확인합니다.
