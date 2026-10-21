@@ -66,7 +66,8 @@ export async function sendRoomPush(env: Env, roomId: string, senderId: string, m
   if (!room) return;
   const { results } = await env.DB.prepare(`SELECT ps.id, ps.user_id, ps.endpoint, ps.p256dh, ps.auth
     FROM push_subscriptions ps JOIN room_members rm ON rm.user_id=ps.user_id
-    JOIN users u ON u.id=ps.user_id WHERE rm.room_id=? AND ps.user_id<>? AND u.notification_enabled=1`)
+    JOIN users u ON u.id=ps.user_id JOIN rooms r ON r.id=rm.room_id WHERE rm.room_id=? AND ps.user_id<>? AND u.notification_enabled=1
+    AND (r.site_id IS NULL OR u.role='admin' OR EXISTS(SELECT 1 FROM site_memberships sm WHERE sm.site_id=r.site_id AND sm.user_id=u.id AND sm.status='approved'))`)
     .bind(roomId, senderId).all<PushSubscriptionData & { id: string; user_id: string }>();
   const targets = results.filter(subscription => !visibleUserIds.includes(subscription.user_id));
   const payload = JSON.stringify({ title: 'Site Talk', body: `[${room.title.slice(0, 120)}]\n${message.user_name.slice(0, 80)}: ${message.content.slice(0, 240)}`, url: `/rooms/${encodeURIComponent(roomId)}`, tag: roomId });

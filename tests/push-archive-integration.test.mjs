@@ -5,15 +5,19 @@ import { readFileSync } from 'node:fs';
 import { createECDH } from 'node:crypto';
 import { runArchives } from '../apps/worker/src/archive.ts';
 import { sendRoomPush } from '../apps/worker/src/push.ts';
+import { aiSettings } from '../apps/worker/src/ai-settings.ts';
 
 function setup() {
   const db = new DatabaseSync(':memory:');
-  db.exec(readFileSync(new URL('../database/migrations/0001_initial.sql', import.meta.url), 'utf8'));
+  for (const migration of ['0001_initial.sql', '0002_sites_and_settings.sql']) db.exec(readFileSync(new URL(`../database/migrations/${migration}`, import.meta.url), 'utf8'));
   for (const id of ['sender', 'visible', 'hidden', 'disabled']) db.prepare('INSERT INTO users(id,name,email,notification_enabled,created_at) VALUES (?,?,?,?,1)').run(id, id, `${id}@example.com`, id === 'disabled' ? 0 : 1);
   db.exec("INSERT INTO rooms(id,title,purpose,created_by,created_at) VALUES ('room','발파 협의','시간 변경','sender',1)");
   for (const id of ['sender', 'visible', 'hidden', 'disabled']) db.prepare("INSERT INTO room_members VALUES ('room',?,1)").run(id);
   db.exec("INSERT INTO messages(id,room_id,user_id,type,content,seq,created_at) VALUES ('message','room','sender','text','발파시간 16:30으로 변경',1,2)");
-  const DB = { prepare(sql) { return { bind(...args) { const statement = db.prepare(sql); return { async first() { return statement.get(...args) || null; }, async all() { return { results: statement.all(...args) }; }, async run() { return statement.run(...args); } }; } }; } };
+  const DB = {
+    prepare(sql) { const statement = db.prepare(sql); const withArgs = args => ({ bind(...values) { return withArgs(values); }, async first() { return statement.get(...args) || null; }, async all() { return { results: statement.all(...args) }; }, async run() { const result = statement.run(...args); return { meta: { changes: Number(result.changes) } }; } }); return withArgs([]); },
+    async batch(statements) { db.exec('BEGIN'); try { const results = []; for (const statement of statements) results.push(await statement.run()); db.exec('COMMIT'); return results; } catch (error) { db.exec('ROLLBACK'); throw error; } },
+  };
   const files = new Map();
   return { db, files, env: { DB, FILES: { async put(key, content) { files.set(key, content); } }, OPENAI_API_KEY: 'fake-test-key' } };
 }
@@ -44,6 +48,7 @@ test('archive claims once across concurrent cron calls, stores raw original, the
   assert.equal(files.size, 1);
   assert.ok([...files.values()][0].includes('발파시간 16:30으로 변경'));
   assert.equal(db.prepare('SELECT status,attempts FROM archive_jobs').get().status, 'done');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM summary_records').get().n, 1);
   await runArchives(env);
   assert.equal(requests, 1);
 });
@@ -57,6 +62,7 @@ test('AI failure preserves messages and failed job; subsequent success retries; 
   t.mock.method(console, 'warn', () => {});
   assert.equal((await runArchives(env)).failed, 1);
   assert.equal(files.size, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM summary_records').get().n, 0);
   assert.equal(db.prepare('SELECT content FROM messages').get().content, '발파시간 16:30으로 변경');
   assert.equal(db.prepare('SELECT status,error FROM archive_jobs').get().error, 'OpenAI HTTP 429');
   db.exec("UPDATE archive_jobs SET status='processing',lease_until=1");
@@ -121,6 +127,66 @@ test('archive missing credentials does not consume retry budget; max attempts bl
   db.exec("INSERT INTO archive_jobs(room_id,status,attempts,created_at,updated_at) VALUES ('room','failed',5,1,1)");
   assert.equal((await runArchives(env)).processed, 0);
   assert.equal(fetch.mock.callCount(), 0);
+});
+
+test('one saved global API key is used by every archive and searchable summary records commit with done jobs', async t => {
+  const { db, env } = setup();
+  t.after(() => db.close());
+  db.exec("UPDATE users SET role='admin' WHERE id='sender'");
+  closeRoom(db);
+  db.exec("INSERT INTO rooms(id,title,purpose,created_by,created_at,status,closed_at) VALUES ('room-2','안전 협의','작업 안전','sender',1,'closed',3)");
+  db.exec("INSERT INTO room_closures(room_id,conclusion,closed_by,closed_at) VALUES ('room-2','합의','sender',3)");
+  const configured = { ...env, AI_SETTINGS_ENCRYPTION_KEY: Buffer.alloc(32, 6).toString('base64') };
+  const fakeKey = 'sk-global-test-only-not-real';
+  await aiSettings(new Request('https://example.com/api/admin/ai-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key: fakeKey, model: 'gpt-4.1' }) }), configured, { id: 'sender', role: 'admin' });
+  const prepare = configured.DB.prepare;
+  let settingsReads = 0;
+  t.mock.method(configured.DB, 'prepare', function (sql) { if (sql.includes('FROM ai_settings')) settingsReads++; return prepare.call(this, sql); });
+  const fetch = t.mock.method(globalThis, 'fetch', async (_, init) => {
+    assert.equal(init.headers.Authorization, `Bearer ${fakeKey}`);
+    assert.equal(JSON.parse(init.body).model, 'gpt-4.1');
+    return response();
+  });
+  assert.equal((await runArchives(configured)).processed, 2);
+  assert.equal(fetch.mock.callCount(), 2);
+  assert.equal(settingsReads, 1);
+  const records = db.prepare('SELECT s.*,j.status FROM summary_records s JOIN archive_jobs j ON j.room_id=s.room_id ORDER BY s.room_id').all();
+  assert.equal(records.length, 2);
+  for (const record of records) {
+    assert.equal(record.status, 'done');
+    assert.equal(record.summary, '시간 변경');
+    assert.deepEqual(JSON.parse(record.decisions), ['16:30 발파']);
+    assert.deepEqual(JSON.parse(record.keywords), ['발파']);
+  }
+});
+
+test('unreadable saved global API key never falls back or consumes job retry budget', async t => {
+  const { db, env } = setup();
+  t.after(() => db.close());
+  closeRoom(db);
+  db.exec("INSERT INTO ai_settings(id,encrypted_key,model,updated_by,updated_at) VALUES (1,'v1.invalid.invalid','gpt-4.1-mini','sender',1)");
+  const warnings = [];
+  t.mock.method(console, 'warn', (...args) => warnings.push(args));
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('Must not fall back'); });
+  assert.equal((await runArchives(env)).configurationMissing, true);
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM archive_jobs').get().n, 0);
+  assert.equal(JSON.stringify(warnings).includes('invalid'), false);
+});
+
+test('summary persistence failure rolls back done status so job can be retried', async t => {
+  const { db, env } = setup();
+  t.after(() => db.close());
+  closeRoom(db);
+  db.exec("CREATE TRIGGER summary_write_failure BEFORE INSERT ON summary_records BEGIN SELECT RAISE(ABORT, 'storage failure'); END");
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(globalThis, 'fetch', async () => response());
+  assert.equal((await runArchives(env)).failed, 1);
+  assert.equal(db.prepare('SELECT status FROM archive_jobs').get().status, 'failed');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM summary_records').get().n, 0);
+  db.exec('DROP TRIGGER summary_write_failure');
+  assert.equal((await runArchives(env)).processed, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM summary_records').get().n, 1);
 });
 
 test('push targets only hidden enabled members, uses encryption, forbids redirects, removes expired endpoint', async t => {

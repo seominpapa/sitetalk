@@ -1,23 +1,34 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { api } from '../../../packages/shared/api-client';
-import { ROOM_TYPES, type Room, type User } from '../../../packages/shared/types';
+import { ROOM_TYPES, type Room, type Site, type SiteMembership, type User } from '../../../packages/shared/types';
 import { Avatar, ErrorNotice, Icon, Modal, errorMessage, formatBytes } from './ui';
+import { AiConfiguration, ApprovalSettings } from './SiteSettings';
 
 export function MemberPicker({ users, selected, change }: { users: User[]; selected: string[]; change: (ids: string[]) => void }) {
   const [query, setQuery] = useState('');
   return <div className="member-picker"><input aria-label="참여자 찾기" placeholder="이름, 회사, 부서로 찾기" value={query} onChange={(event) => setQuery(event.target.value)}/><div className="member-options">{users.filter((user) => `${user.name} ${user.company} ${user.department}`.includes(query)).map((user) => <label key={user.id} className="member-option"><input type="checkbox" checked={selected.includes(user.id)} onChange={(event) => change(event.target.checked ? [...selected, user.id] : selected.filter((id) => id !== user.id))}/><Avatar name={user.name} small/><span><strong>{user.name}</strong><small>{[user.company, user.department].filter(Boolean).join(' · ') || user.email}</small></span></label>)}{!users.length && <p className="muted">추가할 수 있는 사용자가 없습니다.</p>}</div></div>;
 }
-export function RoomForm({ close, user, created }: { close: () => void; user: User; created: (room: Room) => void }) {
+export function RoomForm({ close, user, created, sites }: { close: () => void; user: User; created: (room: Room) => void; sites: Site[] }) {
   const [users, setUsers] = useState<User[]>([]), [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
-  useEffect(() => { api<User[]>('/users').then((users) => setUsers(users.filter((value) => value.id !== user.id))).catch((error) => setError(errorMessage(error))); }, [user.id]);
+  const [site, setSite] = useState(sites[0]?.id || ''), [usersLoading, setUsersLoading] = useState(true);
+  useEffect(() => { let active = true; setSelected([]); setUsers([]); setUsersLoading(true); if (!site) { setUsersLoading(false); return; } api<User[]>(`/users?site_id=${encodeURIComponent(site)}`).then((users) => { if (active) setUsers(users.filter((value) => value.id !== user.id)); }).catch((error) => { if (active) setError(errorMessage(error)); }).finally(() => { if (active) setUsersLoading(false); }); return () => { active = false; }; }, [user.id, site]);
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); if (!selected.length) { setError('함께 대화할 참여자를 1명 이상 선택해 주세요.'); return; }
+    event.preventDefault(); if (!site || !selected.length || usersLoading) { setError('현장과 함께 대화할 승인된 참여자를 1명 이상 선택해 주세요.'); return; }
     setBusy(true); setError(''); const data = Object.fromEntries(new FormData(event.currentTarget));
     try { const room = await api<Room>('/rooms', { method: 'POST', body: JSON.stringify({ ...data, keywords: String(data.keywords).split(',').map((item) => item.trim()).filter(Boolean), member_ids: selected }) }); created(room); }
     catch (error) { setError(errorMessage(error)); } finally { setBusy(false); }
   }
-  return <Modal title="새 대화 만들기" close={close} wide><form onSubmit={submit}><p className="muted modal-intro">업무의 목적을 정하고, 함께 해결할 동료를 초대하세요.</p><label>대화 제목 <span className="required">*</span><input name="title" placeholder="예: 발파계획 변경 협의" required maxLength={120}/></label><label>대화 목적 <span className="required">*</span><textarea name="purpose" placeholder="어떤 내용을 협의하고 결정해야 하나요?" required maxLength={2000} rows={3}/></label><label>참여자 <span className="required">*</span> <small>나를 포함해 {selected.length + 1}명</small></label><MemberPicker users={users} selected={selected} change={setSelected}/><div className="form-grid"><label>대화 유형<select name="type">{ROOM_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label><label>프로젝트<input name="project" placeholder="프로젝트명" maxLength={120}/></label><label>공종<input name="work_category" placeholder="예: 토공 / 가시설" maxLength={120}/></label><label>위치<input name="location" placeholder="예: A구간 STA 2+350" maxLength={200}/></label></div><label>관련 키워드<input name="keywords" placeholder="쉼표로 구분 · 안전, 발파, 계획변경" maxLength={500}/></label><ErrorNotice error={error}/><div className="modal-actions"><button type="button" className="secondary" onClick={close}>취소</button><button className="primary" disabled={busy}>{busy ? '대화 생성 중…' : '대화 시작하기'}<Icon name="arrow" size={17}/></button></div></form></Modal>;
+  return <Modal title="새 대화 만들기" close={close} wide><form onSubmit={submit}>
+    <p className="muted modal-intro">업무의 목적을 정하고, 함께 해결할 승인된 현장 동료를 초대하세요.</p>
+    <label>대화 현장<select name="site_id" value={site} onChange={event => setSite(event.target.value)} required>{sites.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</select></label>
+    <label>대화 제목 <span className="required">*</span><input name="title" placeholder="예: 발파계획 변경 협의" required maxLength={120}/></label>
+    <label>대화 목적 <span className="required">*</span><textarea name="purpose" placeholder="어떤 내용을 협의하고 결정해야 하나요?" required maxLength={2000} rows={3}/></label>
+    <label>참여자 <span className="required">*</span> <small>나를 포함해 {selected.length + 1}명</small></label>{usersLoading ? <p>현장 팀원을 불러오는 중…</p> : <MemberPicker users={users} selected={selected} change={setSelected}/>}
+    <p className="muted">종료된 대화의 요약과 원문·첨부파일은 같은 현장의 승인된 직원이 조회할 수 있습니다.</p>
+    <div className="form-grid"><label>대화 유형<select name="type">{ROOM_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label><label>프로젝트<input name="project" placeholder="프로젝트명" maxLength={120}/></label><label>공종<input name="work_category" placeholder="예: 토공 / 가시설" maxLength={120}/></label><label>위치<input name="location" placeholder="예: A구간 STA 2+350" maxLength={200}/></label></div>
+    <label>관련 키워드<input name="keywords" placeholder="쉼표로 구분 · 안전, 발파, 계획변경" maxLength={500}/></label><ErrorNotice error={error}/><div className="modal-actions"><button type="button" className="secondary" onClick={close}>취소</button><button className="primary" disabled={busy || usersLoading || !site}>{busy ? '대화 생성 중…' : '대화 시작하기'}<Icon name="arrow" size={17}/></button></div>
+  </form></Modal>;
 }
 async function pushRegistration() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) throw new Error('이 브라우저는 웹 알림을 지원하지 않습니다. iPhone/iPad에서는 홈 화면에 앱을 추가한 뒤 열어 주세요.');
@@ -30,7 +41,9 @@ async function pushRegistration() {
   const subscription = await registration.pushManager.getSubscription() || await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes });
   await api('/push/subscriptions', { method: 'POST', body: JSON.stringify(subscription.toJSON()) });
 }
-export function Settings({ user, updated, close, logout }: { user: User; updated: (value: User) => void; close: () => void; logout: () => Promise<void> }) {
+export function Settings({ user, memberships, membershipsChanged, updated, close, logout }: { user: User; memberships: SiteMembership[]; membershipsChanged: () => void; updated: (value: User) => void; close: () => void; logout: () => Promise<void> }) {
+  const [tab, setTab] = useState<'profile' | 'approvals' | 'ai'>('profile');
+  const canApprove = user.role === 'admin' || memberships.some(member => member.status === 'approved' && member.role === 'manager');
   const [error, setError] = useState(''), [success, setSuccess] = useState(''), [busy, setBusy] = useState(false);
   const [permission, setPermission] = useState('Notification' in window ? Notification.permission : 'unsupported');
   const [enabled, setEnabled] = useState(!!user.notification_enabled);
@@ -52,7 +65,15 @@ export function Settings({ user, updated, close, logout }: { user: User; updated
       updated(await api<User>('/auth/me', { method: 'PATCH', body: JSON.stringify({ notification_enabled: on }) })); setEnabled(on); setSubscribed(on); setPermission('Notification' in window ? Notification.permission : 'unsupported'); setSuccess(on ? '새 메시지 알림을 받을 수 있습니다.' : '알림을 껐습니다.');
     } catch (error) { setError(errorMessage(error)); } finally { setBusy(false); }
   }
-  return <Modal title="프로필 및 설정" close={close}><form onSubmit={save}><div className="profile-heading"><Avatar name={user.name}/><div><strong>{user.name}</strong><p>{user.email}</p></div></div><label>이름<input name="name" defaultValue={user.name} required maxLength={80}/></label><div className="form-grid"><label>회사<input name="company" defaultValue={user.company} maxLength={120}/></label><label>부서<input name="department" defaultValue={user.department} maxLength={120}/></label></div><div className="notification-settings"><div><strong>새 메시지 알림</strong><p>브라우저 권한: {({ granted: '허용됨', denied: '차단됨', default: '아직 요청하지 않음', unsupported: '지원하지 않음' })[permission]}</p><small>현재 보고 있지 않은 대화의 새 메시지를 알려드려요.</small></div><button type="button" className={enabled && subscribed && permission === 'granted' ? 'secondary' : 'primary'} disabled={busy} onClick={() => void notification(!(enabled && subscribed && permission === 'granted'))}>{enabled && subscribed && permission === 'granted' ? '알림 끄기' : '알림 허용'}</button></div><ErrorNotice error={error}/>{success && <p className="success" role="status">{success}</p>}<div className="modal-actions settings-actions"><button type="button" className="text-danger" onClick={() => { setBusy(true); void logout().catch((error) => setError(errorMessage(error))).finally(() => setBusy(false)); }} disabled={busy}>로그아웃</button><button className="primary" disabled={busy}>설정 저장</button></div></form></Modal>;
+  return <Modal title="프로필 및 설정" close={close} wide={tab !== 'profile'}>
+    <div className="tabs settings-tabs" role="tablist" aria-label="설정 메뉴"><button role="tab" aria-selected={tab === 'profile'} onClick={() => setTab('profile')}>프로필·알림</button>{canApprove && <button role="tab" aria-selected={tab === 'approvals'} onClick={() => setTab('approvals')}>승인 설정</button>}{user.role === 'admin' && <button role="tab" aria-selected={tab === 'ai'} onClick={() => setTab('ai')}>AI 요약 설정</button>}</div>
+    {tab === 'ai' && user.role === 'admin' ? <AiConfiguration/> : tab === 'approvals' && canApprove ? <ApprovalSettings user={user} changed={membershipsChanged}/> : <form onSubmit={save}><div className="profile-heading"><Avatar name={user.name}/><div><strong>{user.name}</strong><p>{user.email}</p></div></div>
+      <label>이름<input name="name" defaultValue={user.name} required maxLength={80}/></label><div className="form-grid"><label>회사<input name="company" defaultValue={user.company} maxLength={120}/></label><label>부서<input name="department" defaultValue={user.department} maxLength={120}/></label></div>
+      <div className="settings-section"><h3>현장 소속</h3>{memberships.length ? memberships.map(member => <p key={member.site_id} className="settings-info">{member.site_name} · {member.role === 'manager' ? '현장담당자' : '팀원'} · {({ pending: '승인 대기', approved: '승인됨', rejected: '반려됨' })[member.status]}</p>) : <p className="muted">배정된 현장이 없습니다.</p>}</div>
+      <div className="notification-settings"><div><strong>새 메시지 알림</strong><p>브라우저 권한: {({ granted: '허용됨', denied: '차단됨', default: '아직 요청하지 않음', unsupported: '지원하지 않음' })[permission]}</p><small>현재 보고 있지 않은 대화의 새 메시지를 알려드려요.</small></div><button type="button" className={enabled && subscribed && permission === 'granted' ? 'secondary' : 'primary'} disabled={busy} onClick={() => void notification(!(enabled && subscribed && permission === 'granted'))}>{enabled && subscribed && permission === 'granted' ? '알림 끄기' : '알림 허용'}</button></div>
+      <ErrorNotice error={error}/>{success && <p className="success" role="status">{success}</p>}<div className="modal-actions settings-actions"><button type="button" className="text-danger" onClick={() => { setBusy(true); void logout().catch((error) => setError(errorMessage(error))).finally(() => setBusy(false)); }} disabled={busy}>로그아웃</button><button className="primary" disabled={busy}>설정 저장</button></div>
+    </form>}
+  </Modal>;
 }
 export function Admin({ close, select }: { close: () => void; select: (id: string) => void }) {
   const [data, setData] = useState<{ users: User[]; rooms: Room[]; storage_bytes: number; archive_count: number } | null>(null);

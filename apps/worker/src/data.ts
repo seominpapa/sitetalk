@@ -1,8 +1,9 @@
 import type { Env } from './env';
 import type { Room, Message, Attachment } from '../../../packages/shared/types';
-import { HttpError } from './http';
+import { HttpError } from './http.ts';
 export async function memberRoom(env: Env, roomId: string, userId: string): Promise<Room> {
-  const room = await env.DB.prepare('SELECT r.* FROM rooms r JOIN room_members rm ON rm.room_id=r.id WHERE r.id=? AND rm.user_id=?').bind(roomId,userId).first<Room>();
+  const room = await env.DB.prepare(`SELECT r.* FROM rooms r JOIN room_members rm ON rm.room_id=r.id WHERE r.id=? AND rm.user_id=?
+    AND (r.site_id IS NULL OR EXISTS(SELECT 1 FROM users WHERE id=? AND role='admin') OR EXISTS(SELECT 1 FROM site_memberships sm WHERE sm.site_id=r.site_id AND sm.user_id=? AND sm.status='approved'))`).bind(roomId,userId,userId,userId).first<Room>();
   if (!room) throw new HttpError(404, 'ROOM_NOT_FOUND', '대화방을 찾을 수 없거나 참여 권한이 없습니다.');
   return room;
 }

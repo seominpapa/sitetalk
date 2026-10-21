@@ -60,6 +60,7 @@ export class ChatRoom extends DurableObject<Env> {
       try {
         const c = ws.deserializeAttachment() as Connection;
         await authenticate(new Request('https://session.local',{headers:{Cookie:c.token}}),this.env);
+        await memberRoom(this.env,c.roomId,c.userId);
         ws.send(JSON.stringify(event));
       } catch { ws.close(1008,'Session expired'); }
     }
@@ -127,7 +128,7 @@ export class ChatRoom extends DurableObject<Env> {
     if (!memberIds.length) throw new HttpError(400,'NO_MEMBERS','참여자를 선택해 주세요.');
     const existing = await this.env.DB.prepare('SELECT count(*) n FROM room_members WHERE room_id=?').bind(room.id).first<{n:number}>();
     if ((existing?.n || 0)+memberIds.length>50) throw new HttpError(400,'TOO_MANY_MEMBERS','대화방 참여자는 최대 50명입니다.');
-    const valid = await this.env.DB.prepare(`SELECT id FROM users WHERE id IN (${memberIds.map(()=>'?').join(',')})`).bind(...memberIds).all();
+    const valid = await this.env.DB.prepare(`SELECT id FROM users u WHERE id IN (${memberIds.map(()=>'?').join(',')}) AND (? IS NULL OR EXISTS(SELECT 1 FROM site_memberships sm WHERE sm.site_id=? AND sm.user_id=u.id AND sm.status='approved'))`).bind(...memberIds,room.site_id,room.site_id).all();
     if (valid.results.length !== memberIds.length) throw new HttpError(400,'INVALID_MEMBERS','등록된 사용자만 초대할 수 있습니다.');
     await this.env.DB.batch(memberIds.map(id=>this.env.DB.prepare('INSERT OR IGNORE INTO room_members(room_id,user_id,joined_at) VALUES(?,?,?)').bind(room.id,id,Date.now())));
     await this.broadcast({type:'members_changed'}); return ok(null);

@@ -22,6 +22,14 @@ test('archive preserves exact original contents in safe code fences, closure, li
   assert.equal(archiveKey(data.room), 'site-talk-archive/2026/09/14/A_구간_협의--room-1.md');
 });
 
+test('site archive links approved staff to original transcript and site-shared attachments, preserving legacy links', () => {
+  const markdown = buildMarkdown({ ...data, room: { ...data.room, site_id: 'site-1' } }, summary);
+  assert.ok(markdown.includes('[대화 원문 열람](/summaries/room-1/original)'));
+  assert.ok(markdown.includes('/api/summaries/room-1/attachments/a1'));
+  assert.equal(markdown.includes('대화방 접근 권한이 필요합니다'), false);
+  assert.ok(buildMarkdown(data, summary).includes('/api/attachments/a1'));
+});
+
 test('invalid, refused and incomplete AI outputs fail instead of marking a fake summary', () => {
   assert.deepEqual(parseSummary({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(summary) }] }] }), summary);
   for (const value of [{ status: 'incomplete' }, { status: 'completed', output: [{ type: 'message', content: [{ type: 'refusal' }] }] }, { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '{"summary":"x"}' }] }] }]) assert.throws(() => parseSummary(value));
@@ -30,6 +38,24 @@ test('invalid, refused and incomplete AI outputs fail instead of marking a fake 
 test('single invalid oversized message fails without dropping original data or issuing paid fetch', async () => {
   const long = { ...data, messages: [{ ...data.messages[0], content: 'a'.repeat(250_001) }] };
   await assert.rejects(summarizeArchive({ OPENAI_API_KEY: 'test' }, long), /too large/i);
+});
+
+test('GPT-6 catalog models use the existing Responses structured-output request', async t => {
+  for (const model of ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra']) {
+    const upstream = t.mock.method(globalThis, 'fetch', async (url, init) => {
+      assert.equal(url, 'https://api.openai.com/v1/responses');
+      const body = JSON.parse(init.body);
+      assert.equal(body.model, model);
+      assert.equal(body.store, false);
+      assert.equal(body.text.format.type, 'json_schema');
+      assert.equal(body.text.format.strict, true);
+      assert.equal('temperature' in body, false);
+      return Response.json({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(summary) }] }] });
+    });
+    assert.deepEqual(await summarizeArchive({ OPENAI_API_KEY: 'test', OPENAI_MODEL: model }, data), summary);
+    assert.equal(upstream.mock.callCount(), 1);
+    upstream.mock.restore();
+  }
 });
 
 test('long rooms summarize every message and attachment in bounded requests, preserve originals and label merged parts', async t => {

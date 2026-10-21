@@ -71,6 +71,15 @@ test('successful login stores hashed token and returns secure private session co
   assert.equal('password_hash' in (await response.json()).data, false);
 });
 
+test('registration policy does not restrict existing administrator or member logins', async () => {
+  for (const [role,password] of [['admin','1234'],['member','legacy-password']]) {
+    const env=loginEnvironment({id:role,email:`${role}@example.invalid`,role,password_hash:await passwordHash(password)});
+    const response=await login(request({email:`${role}@example.invalid`,password}),env);
+    assert.equal(response.status,200);
+    assert.equal((await response.json()).data.role,role);
+  }
+});
+
 test('JSON accepts its actual media type and rejects malformed or excessive bodies', async () => {
   assert.deepEqual(await json(request({ message: 'hello' }, { 'Content-Type': 'Application/JSON; charset=utf-8' })), { message: 'hello' });
   await assert.rejects(json(request({}, { 'Content-Type': 'text/application/json' })), error => error.status === 415);

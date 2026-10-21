@@ -1,6 +1,7 @@
 import type { Env } from './env';
+import { configuredAiEnv } from './ai-settings.ts';
 
-interface ArchiveRoom { id: string; title: string; purpose: string; project: string; work_category: string; location: string; type: string; closed_at: number }
+interface ArchiveRoom { id: string; site_id?: string | null; title: string; purpose: string; project: string; work_category: string; location: string; type: string; closed_at: number }
 interface ArchiveMessage { id: string; seq: number; user_name: string; created_at: number; content: string; type: string }
 interface ArchiveAttachment { id: string; filename: string; message_id: string }
 interface ArchiveClosure { conclusion: string; owner_name: string | null; due_date: string | null; note: string; closed_at: number }
@@ -25,11 +26,13 @@ export function archiveKey(room: ArchiveRoom) {
 
 export function buildMarkdown(data: ArchiveData, summary: Summary) {
   const { room, closure } = data;
+  const original = room.site_id ? `\n\n[대화 원문 열람](/summaries/${encodeURIComponent(room.id)}/original)` : '';
+  const attachmentPath = room.site_id ? `/api/summaries/${encodeURIComponent(room.id)}/attachments` : '/api/attachments';
   const messages = data.messages.map(message => `### ${seoulDate(message.created_at)} ${seoulTime(message.created_at)} ${escape(message.user_name)} · ${escape(message.type)}\n\n${rawBlock(message.content)}`).join('\n\n');
-  const attachments = data.attachments.map(file => `- [${escape(file.filename)}](/api/attachments/${encodeURIComponent(file.id)}) · message: ${escape(file.message_id)}`).join('\n');
+  const attachments = data.attachments.map(file => `- [${escape(file.filename)}](${attachmentPath}/${encodeURIComponent(file.id)}) · message: ${escape(file.message_id)}`).join('\n');
   return `# ${escape(room.title)}
 
-Date: ${seoulDate(room.closed_at)}
+Date: ${seoulDate(room.closed_at)}${original}
 
 Project: ${escape(room.project)}
 
@@ -78,7 +81,7 @@ ${bulletList(summary.actions)}
 
 ${attachments || '- 첨부파일 없음'}
 
-첨부파일 링크는 Site Talk 로그인 및 대화방 접근 권한이 필요합니다.
+${room.site_id ? '첨부파일과 원문 링크는 Site Talk 로그인 및 해당 현장 가입 승인이 필요합니다.' : '첨부파일 링크는 Site Talk 로그인 및 대화방 접근 권한이 필요합니다.'}
 
 ## Keywords
 
@@ -176,8 +179,14 @@ async function loadArchive(env: Env, roomId: string): Promise<ArchiveData> {
 }
 
 export async function runArchives(env: Env) {
-  if (!env.OPENAI_API_KEY) {
-    console.warn('archive_configuration_missing', { key: 'OPENAI_API_KEY' });
+  let configured: Env;
+  try { configured = await configuredAiEnv(env); }
+  catch {
+    console.warn('archive_configuration_unavailable');
+    return { processed: 0, failed: 0, configurationMissing: true };
+  }
+  if (!configured.OPENAI_API_KEY) {
+    console.warn('archive_configuration_missing');
     return { processed: 0, failed: 0, configurationMissing: true };
   }
   const now = Date.now();
@@ -197,7 +206,7 @@ export async function runArchives(env: Env) {
     if (!claim) continue;
     try {
       const data = await loadArchive(env, job.room_id);
-      const summary = await summarizeArchive(env, data, {
+      const summary = await summarizeArchive(configured, data, {
         deadline: Math.min(claimedAt + 480_000, executionDeadline),
         beforePart: async () => {
           const owned = await env.DB.prepare("SELECT room_id FROM archive_jobs WHERE room_id=? AND status='processing' AND attempts=? AND lease_until>?").bind(job.room_id, claim.attempts, Date.now() + 65_000).first();
@@ -208,9 +217,16 @@ export async function runArchives(env: Env) {
       const lease = await env.DB.prepare("SELECT room_id FROM archive_jobs WHERE room_id=? AND status='processing' AND attempts=? AND lease_until>?").bind(job.room_id, claim.attempts, Date.now()).first();
       if (!lease) continue;
       await env.FILES.put(key, buildMarkdown(data, summary), { httpMetadata: { contentType: 'text/markdown; charset=utf-8' }, customMetadata: { roomId: job.room_id } });
-      const updated = await env.DB.prepare("UPDATE archive_jobs SET status='done',r2_key=?,lease_until=NULL,error=NULL,updated_at=? WHERE room_id=? AND status='processing' AND attempts=? RETURNING room_id")
-        .bind(key, Date.now(), job.room_id, claim.attempts).first();
-      if (updated) processed++;
+      const completedAt = Date.now();
+      const [updated] = await env.DB.batch([
+        env.DB.prepare("UPDATE archive_jobs SET status='done',r2_key=?,lease_until=NULL,error=NULL,updated_at=? WHERE room_id=? AND status='processing' AND attempts=? AND lease_until>?")
+          .bind(key, completedAt, job.room_id, claim.attempts, completedAt),
+        env.DB.prepare(`INSERT INTO summary_records(room_id,summary,decisions,actions,keywords,updated_at)
+          SELECT room_id,?,?,?,?,? FROM archive_jobs WHERE room_id=? AND status='done' AND attempts=? AND r2_key=? AND updated_at=?
+          ON CONFLICT(room_id) DO UPDATE SET summary=excluded.summary,decisions=excluded.decisions,actions=excluded.actions,keywords=excluded.keywords,updated_at=excluded.updated_at`)
+          .bind(summary.summary, JSON.stringify(summary.decisions), JSON.stringify(summary.actions), JSON.stringify(summary.keywords), completedAt, job.room_id, claim.attempts, key, completedAt),
+      ]);
+      if (updated.meta.changes) processed++;
     } catch (error) {
       failed++;
       const safeError = error instanceof Error && /^(OpenAI HTTP \d{3}|AI output [a-zA-Z ]+|Archive (context too large|record too large|request too large|processing time budget exceeded|lease lost)|Closed room or closure missing)$/.test(error.message) ? error.message : 'Archive failed; check configuration, service availability and retry';

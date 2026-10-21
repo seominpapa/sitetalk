@@ -2,26 +2,30 @@ import type { Env } from './env';
 import type { User, Room } from '../../../packages/shared/types';
 import { ROOM_TYPES } from '../../../packages/shared/types';
 import { authenticate, login, logout, updateProfile, sameOrigin, rateLimit, USER_FIELDS } from './auth';
-import { ok, fail, HttpError, json, text, ids } from './http';
+import { ok, fail, HttpError, json, text, ids, limitedBody } from './http';
 import { memberRoom, messages } from './data';
 import { validatePushSubscription } from './push';
 import { runArchives } from './archive';
+import { selectedSite, siteRoutes } from './sites';
+import { summaryAccess, summaryRoutes } from './summaries';
+import { aiSettings } from './ai-settings';
 export { ChatRoom } from './room';
 
 async function listRooms(env: Env, user: User, q = ''): Promise<Response> {
   const pattern = `%${q.replace(/[\\%_]/g, '\\$&')}%`;
   const rows = await env.DB.prepare(`SELECT r.*, (SELECT count(*) FROM messages m WHERE m.room_id=r.id AND m.user_id<>? AND m.seq>coalesce(rr.last_read_seq,0)) unread_count
     FROM rooms r JOIN room_members rm ON rm.room_id=r.id AND rm.user_id=? LEFT JOIN room_reads rr ON rr.room_id=r.id AND rr.user_id=?
-    WHERE (?='' OR r.title LIKE ? ESCAPE '\\' OR r.purpose LIKE ? ESCAPE '\\' OR r.project LIKE ? ESCAPE '\\' OR r.work_category LIKE ? ESCAPE '\\' OR r.location LIKE ? ESCAPE '\\'
+    WHERE (r.site_id IS NULL OR ?='admin' OR EXISTS(SELECT 1 FROM site_memberships sm WHERE sm.site_id=r.site_id AND sm.user_id=? AND sm.status='approved')) AND (?='' OR r.title LIKE ? ESCAPE '\\' OR r.purpose LIKE ? ESCAPE '\\' OR r.project LIKE ? ESCAPE '\\' OR r.work_category LIKE ? ESCAPE '\\' OR r.location LIKE ? ESCAPE '\\'
     OR EXISTS(SELECT 1 FROM messages m WHERE m.room_id=r.id AND m.content LIKE ? ESCAPE '\\')
     OR EXISTS(SELECT 1 FROM room_members rmm JOIN users u ON u.id=rmm.user_id WHERE rmm.room_id=r.id AND u.name LIKE ? ESCAPE '\\'))
-    ORDER BY r.created_at DESC LIMIT 500`).bind(user.id,user.id,user.id,q,pattern,pattern,pattern,pattern,pattern,pattern,pattern).all();
+    ORDER BY r.created_at DESC LIMIT 500`).bind(user.id,user.id,user.id,user.role,user.id,q,pattern,pattern,pattern,pattern,pattern,pattern,pattern).all();
   return ok(rows.results);
 }
 async function createRoom(request: Request, env: Env, user: User): Promise<Response> {
   const b = await json(request); const memberIds = [...new Set([user.id,...ids(b.member_ids)])];
+  const siteId=await selectedSite(env,user,b.site_id);
   if (memberIds.length>50) throw new HttpError(400,'TOO_MANY_MEMBERS','참여자는 최대 50명입니다.');
-  const valid = await env.DB.prepare(`SELECT id FROM users WHERE id IN (${memberIds.map(()=>'?').join(',')})`).bind(...memberIds).all();
+  const valid = await env.DB.prepare(`SELECT id FROM users u WHERE id IN (${memberIds.map(()=>'?').join(',')}) AND (EXISTS(SELECT 1 FROM site_memberships sm WHERE sm.site_id=? AND sm.user_id=u.id AND sm.status='approved') OR (u.id=? AND u.role='admin'))`).bind(...memberIds,siteId,user.id).all();
   if (valid.results.length !== memberIds.length) throw new HttpError(400,'INVALID_MEMBERS','등록된 참여자를 선택해 주세요.');
   const type = b.type ?? '일반업무';
   if (!ROOM_TYPES.includes(type as typeof ROOM_TYPES[number])) throw new HttpError(400,'INVALID_TYPE','대화 유형을 확인해 주세요.');
@@ -29,7 +33,7 @@ async function createRoom(request: Request, env: Env, user: User): Promise<Respo
   if (!Array.isArray(keywords) || keywords.length>20 || keywords.some(k=> typeof k!=='string'||k.length>80)) throw new HttpError(400,'INVALID_KEYWORDS','키워드는 최대 20개입니다.');
   const id=crypto.randomUUID(); const now=Date.now();
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO rooms(id,title,purpose,type,project,work_category,location,keywords,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(id,text(b.title,'제목'),text(b.purpose,'목적',4000),type,text(b.project,'프로젝트',200,false),text(b.work_category,'공종',200,false),text(b.location,'위치',200,false),JSON.stringify(keywords),user.id,now),
+    env.DB.prepare('INSERT INTO rooms(id,site_id,title,purpose,type,project,work_category,location,keywords,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(id,siteId,text(b.title,'제목'),text(b.purpose,'목적',4000),type,text(b.project,'프로젝트',200,false),text(b.work_category,'공종',200,false),text(b.location,'위치',200,false),JSON.stringify(keywords),user.id,now),
     ...memberIds.map(uid=>env.DB.prepare('INSERT INTO room_members(room_id,user_id,joined_at) VALUES(?,?,?)').bind(id,uid,now)),
   ]);
   return ok(await env.DB.prepare('SELECT * FROM rooms WHERE id=?').bind(id).first(),201);
@@ -51,10 +55,13 @@ async function markRead(request: Request, env: Env, user: User, roomId: string):
     ON CONFLICT(room_id,user_id) DO UPDATE SET last_read_seq=excluded.last_read_seq,last_read_message_id=excluded.last_read_message_id,last_read_at=excluded.last_read_at WHERE excluded.last_read_seq>room_reads.last_read_seq`).bind(roomId,user.id,message.seq,message.id,Date.now()).run();
   return ok(null);
 }
-async function download(request: Request, env: Env, user: User, id: string): Promise<Response> {
+async function download(request: Request, env: Env, user: User, id: string, sharedRoom?: string): Promise<Response> {
   const file = await env.DB.prepare('SELECT * FROM attachments WHERE id=?').bind(id).first<{room_id:string;r2_key:string;mime_type:string;filename:string}>();
   if (!file) throw new HttpError(404,'FILE_NOT_FOUND','파일을 찾을 수 없습니다.');
-  await memberRoom(env,file.room_id,user.id);
+  if (sharedRoom) {
+    if (file.room_id!==sharedRoom) throw new HttpError(404,'FILE_NOT_FOUND','파일을 찾을 수 없습니다.');
+    await summaryAccess(env,user,sharedRoom);
+  } else await memberRoom(env,file.room_id,user.id);
   const object = await env.FILES.get(file.r2_key);
   if (!object) throw new HttpError(404,'FILE_NOT_FOUND','파일을 찾을 수 없습니다.');
   const inline = new URL(request.url).searchParams.get('download') !== '1' && /^(image\/(png|jpeg|webp|gif)|application\/pdf)$/.test(file.mime_type);
@@ -74,12 +81,22 @@ async function route(request: Request, env: Env): Promise<Response> {
   sameOrigin(request);
   if (p==='/api/health' && method==='GET') return ok({service:'Site Talk'});
   if (p==='/api/auth/login' && method==='POST') return login(request,env);
+  if ((p==='/api/sites' && method==='GET') || (p==='/api/auth/register' && method==='POST')) {
+    await rateLimit(env,`public:${request.headers.get('CF-Connecting-IP')||'local'}`,60);
+    return (await siteRoutes(request,env,null))!;
+  }
   const user=await authenticate(request,env);
   await rateLimit(env,`api:${user.id}`,240);
+  const siteResponse=await siteRoutes(request,env,user);
+  if (siteResponse) return siteResponse;
+  if (p==='/api/admin/ai-settings' && ['GET','PUT'].includes(method)) return aiSettings(request,env,user);
+  const summaryResponse=await summaryRoutes(request,env,user);
+  if (summaryResponse) return summaryResponse;
+  const sharedAttachment=p.match(/^\/api\/summaries\/([^/]+)\/attachments\/([^/]+)$/);
+  if (sharedAttachment && method==='GET') return download(request,env,user,sharedAttachment[2],sharedAttachment[1]);
   if (p==='/api/auth/logout' && method==='POST') return logout(request,env);
   if (p==='/api/auth/me' && method==='GET') return ok(user);
   if (p==='/api/auth/me' && method==='PATCH') return updateProfile(request,env,user);
-  if (p==='/api/users' && method==='GET') return ok((await env.DB.prepare(`SELECT ${USER_FIELDS} FROM users ORDER BY name LIMIT 1000`).all()).results);
   if (p==='/api/rooms' && method==='GET') return listRooms(env,user);
   if (p==='/api/rooms' && method==='POST') return createRoom(request,env,user);
   if (p==='/api/search' && method==='GET') return listRooms(env,user,text(url.searchParams.get('q'),'검색어',100,false));
@@ -97,7 +114,11 @@ async function route(request: Request, env: Env): Promise<Response> {
     const [,id,action]=match;
     if (!action && method==='GET') return roomDetail(env,user,id);
     await memberRoom(env,id,user.id);
-    if ((action==='ws' && method==='GET') || (['messages','attachments','close','members'].includes(action) && method==='POST')) return env.ROOMS.get(env.ROOMS.idFromName(id)).fetch(request);
+    if ((action==='ws' && method==='GET') || (['messages','attachments','close','members'].includes(action) && method==='POST')) {
+      // Finish the incoming JSON stream before a DO can reject without reading its body.
+      const forwarded = method==='POST' && action!=='attachments' ? new Request(request,{body:await limitedBody(request,32_768)}) : request;
+      return env.ROOMS.get(env.ROOMS.idFromName(id)).fetch(forwarded);
+    }
     if (action==='messages' && method==='GET') {
       const before=Number(url.searchParams.get('before')||Number.MAX_SAFE_INTEGER);
       if (!Number.isSafeInteger(before)||before<1) throw new HttpError(400,'INVALID_CURSOR','페이지 번호가 올바르지 않습니다.');

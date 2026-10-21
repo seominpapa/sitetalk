@@ -1,6 +1,9 @@
-import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { test, expect, type Page, type APIRequestContext, type Browser } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 const users = JSON.parse(readFileSync(process.env.E2E_CREDENTIALS_FILE || '.wrangler/test-users.json','utf8'));
+const localHeaders=()=>process.env.E2E_BASE_URL ? {} : {'CF-Connecting-IP':`198.19.${Math.floor(Math.random()*250)}.${Math.floor(Math.random()*250)+1}`};
+const contextFor=(browser:Browser)=>browser.newContext({extraHTTPHeaders:localHeaders()});
+test.beforeEach(async({context})=>{if(!process.env.E2E_BASE_URL) await context.setExtraHTTPHeaders(localHeaders());});
 async function login(page: Page, index: number) {
   await page.goto('/');
   await page.getByLabel('이메일', { exact:true }).fill(users[index].email);
@@ -16,7 +19,7 @@ async function data(response: Awaited<ReturnType<APIRequestContext['get']>>) {
 test('two users: room, realtime, paste image, PDF download, search, close, access control', async ({browser}) => {
   // 55 sequential real-network writes alone take ~75s; retain the 90s local budget.
   if (process.env.E2E_BASE_URL?.startsWith('https://')) test.setTimeout(180_000);
-  const a=await browser.newContext(), b=await browser.newContext(), c=await browser.newContext();
+  const a=await contextFor(browser), b=await contextFor(browser), c=await contextFor(browser);
   const pa=await a.newPage(), pb=await b.newPage(), pc=await c.newPage();
   const rateLimited:string[]=[];
   for(const page of [pa,pb,pc]) page.on('response',response=>{
@@ -38,6 +41,7 @@ test('two users: room, realtime, paste image, PDF download, search, close, acces
   });
   await login(pa,0); await login(pb,1); await login(pc,2);
   await pa.getByRole('button',{name:'새 대화 만들기'}).click();
+  if (users[0].site_id) await pa.getByLabel('대화 현장').selectOption(users[0].site_id);
   await pa.getByLabel('대화 제목').fill('발파계획 변경 협의');
   await pa.getByLabel('대화 목적').fill('발파 시간을 변경하고 안전 통제 범위를 확정합니다.');
   await pa.getByRole('checkbox',{name:new RegExp(users[1].name)}).check();
@@ -137,9 +141,9 @@ test('two users: room, realtime, paste image, PDF download, search, close, acces
 });
 
 test('API atomic close, idempotency, validation and unread watermarks',async({browser})=>{
-  const context=await browser.newContext(); const page=await context.newPage(); await login(page,0);
+  const context=await contextFor(browser); const page=await context.newPage(); await login(page,0);
   const req=context.request;
-  const room=await data(await req.post('/api/rooms',{data:{title:'원자적 종료 검증',purpose:'경합·중복 검증',member_ids:[users[1].id]}}));
+  const room=await data(await req.post('/api/rooms',{data:{site_id:users[0].site_id,title:'원자적 종료 검증',purpose:'경합·중복 검증',member_ids:[users[1].id]}}));
   const send={content:'한 번만 저장',client_id:crypto.randomUUID()};
   const [one,two]=await Promise.all([req.post(`/api/rooms/${room.id}/messages`,{data:send}).then(data),req.post(`/api/rooms/${room.id}/messages`,{data:send}).then(data)]);
   expect(one.id).toBe(two.id); expect(one.seq).toBe(1);
@@ -147,7 +151,7 @@ test('API atomic close, idempotency, validation and unread watermarks',async({br
   const message2=await data(await req.post(`/api/rooms/${room.id}/messages`,{data:{content:'두 번째',client_id:crypto.randomUUID()}}));
   await req.post(`/api/rooms/${room.id}/read`,{data:{last_read_message_id:message2.id}});
   await req.post(`/api/rooms/${room.id}/read`,{data:{last_read_message_id:one.id}});
-  expect((await req.post('/api/rooms',{data:{title:'bad',purpose:'bad',member_ids:['nonexistent']}})).status()).toBe(400);
+  expect((await req.post('/api/rooms',{data:{site_id:users[0].site_id,title:'bad',purpose:'bad',member_ids:['nonexistent']}})).status()).toBe(400);
   expect((await req.post(`/api/rooms/${room.id}/messages`,{headers:{Origin:'https://attacker.invalid'},data:send})).status()).toBe(403);
   const close=req.post(`/api/rooms/${room.id}/close`,{data:{conclusion:'완료',owner_id:users[1].id,due_date:'2026-09-15'}});
   const racing=req.post(`/api/rooms/${room.id}/messages`,{data:{content:'종료와 경합',client_id:crypto.randomUUID()}});
@@ -158,9 +162,9 @@ test('API atomic close, idempotency, validation and unread watermarks',async({br
 });
 
 test('unread counts, monotonic reads, invitation permissions and logout',async({browser})=>{
-  const a=await browser.newContext(), b=await browser.newContext();
+  const a=await contextFor(browser), b=await contextFor(browser);
   await login(await a.newPage(),0); await login(await b.newPage(),1);
-  const room=await data(await a.request.post('/api/rooms',{data:{title:'읽음 및 초대 검증',purpose:'미열람 개수와 권한 검증',member_ids:[users[1].id],type:'안전',project:'가덕도',work_category:'발파',location:'A구간',keywords:['통제']}}));
+  const room=await data(await a.request.post('/api/rooms',{data:{site_id:users[0].site_id,title:'읽음 및 초대 검증',purpose:'미열람 개수와 권한 검증',member_ids:[users[1].id],type:'안전',project:'가덕도',work_category:'발파',location:'A구간',keywords:['통제']}}));
   const path=`/api/rooms/${room.id}`;
   const unread=async()=> (await data(await b.request.get('/api/rooms'))).find((r:any)=>r.id===room.id).unread_count;
   expect(await unread()).toBe(0);
