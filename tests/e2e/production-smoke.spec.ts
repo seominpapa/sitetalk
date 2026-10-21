@@ -15,9 +15,10 @@ test('production smoke: signup approval, manager promotion and administrator API
   expect(existsSync(journalPath), 'Clean up the previous production smoke journal before another run.').toBe(false);
   const runId = randomUUID(), siteName = `[운영 검증] ${runId}`, staffName = `검증팀원-${runId.slice(0, 8)}`;
   const email = `prod-smoke-${runId}@example.invalid`, password = `${randomBytes(32).toString('base64url')}1!`;
-  const journal = { run_id: runId, created_at: Date.now(), site_id: '', new_user_id: '', new_user_email: email, manager_user_id: manager.id };
+  const journal = { run_id: runId, created_at: Date.now(), site_name: siteName, site_id: '', new_user_id: '', new_user_email: email, manager_user_id: manager.id };
   const saveJournal = () => writeFileSync(journalPath, JSON.stringify(journal, null, 2), { mode: 0o600 });
   mkdirSync('.wrangler', { recursive: true });
+  saveJournal();
   const adminContext = await browser.newContext({ baseURL }), managerContext = await browser.newContext({ baseURL });
   const staffContext = await browser.newContext({ baseURL });
   const contexts = [adminContext, managerContext, staffContext];
@@ -40,11 +41,11 @@ test('production smoke: signup approval, manager promotion and administrator API
   try {
     const adminPage = await adminContext.newPage(); await login(adminPage, administrator);
     const before = await data(await adminContext.request.get('/api/admin/ai-settings'));
-    expect(before.storage_ready).toBe(true); expect(before.configured).toBe(false);
+    expect(before.storage_ready).toBe(true); expect(before.configured).toBe(before.source !== 'none');
     await settings(adminPage, 'AI 요약 설정');
     await expect(adminPage.getByLabel('OpenAI API 키')).toHaveValue('');
     await expect(adminPage.getByLabel('OpenAI API 키')).toHaveAttribute('type', 'password');
-    await expect(adminPage.getByText(/키 등록: 미등록/)).toBeVisible();
+    await expect(adminPage.getByText(`키 등록: ${before.configured ? '등록됨' : '미등록'}`)).toBeVisible();
     await expect(adminPage.getByLabel('요약 모델')).toHaveValue(before.model);
     await adminPage.screenshot({ path: 'test-results/production-ai-settings.png', mask: [adminPage.getByLabel('OpenAI API 키')] });
     // Invalid syntax is rejected before encryption/storage; no fake usable key and no paid call.
