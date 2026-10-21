@@ -4,6 +4,8 @@
   "account_id": "1531be39715b5ebfec7472624d91e51f",
   "main": "apps/worker/src/index.ts",
   "compatibility_date": "2026-09-13",
+  "workers_dev": true,
+  "routes": [{ "pattern": "sitetalk.seominpapa.com", "custom_domain": true, "zone_id": "9758774f26fb362ea3b49488d3b56b5b" }],
   "assets": { "directory": "./dist", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*"] },
   "d1_databases": [{ "binding": "DB", "database_name": "site-talk", "database_id": "b274b206-a838-4ae2-8a05-30a475682abe", "migrations_dir": "database/migrations" }],
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "site-talk-files" }],

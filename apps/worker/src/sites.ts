@@ -5,6 +5,7 @@ import { USER_FIELDS, rateLimit } from './auth.ts';
 import { passwordHash } from './crypto.ts';
 import { HttpError, json, ok, text } from './http.ts';
 import { siteRequestRoutes } from './site-requests.ts';
+import { summaryScheduleRoutes } from './summary-schedule.ts';
 
 const membershipFields = 'sm.*,s.name site_name,u.name,u.email,u.company,u.department';
 export async function approvedSite(env: Env, siteId: string, userId: string): Promise<void> {
@@ -78,6 +79,8 @@ export async function siteRoutes(request: Request, env: Env, user: User | null):
   if (p==='/api/auth/register' && method==='POST' && !user) return register(request,env);
   if (p==='/api/sites' && method==='GET') return ok((await env.DB.prepare('SELECT id,name FROM sites ORDER BY name').bind().all()).results);
   if (!user) return null;
+  const scheduleResponse=await summaryScheduleRoutes(request,env,user);
+  if (scheduleResponse) return scheduleResponse;
   const siteRequest=await siteRequestRoutes(request,env,user);
   if (siteRequest) return siteRequest;
   if (p==='/api/me/memberships' && method==='GET') return ok((await env.DB.prepare(`SELECT ${membershipFields} FROM site_memberships sm JOIN sites s ON s.id=sm.site_id JOIN users u ON u.id=sm.user_id WHERE sm.user_id=? ORDER BY s.name`).bind(user.id).all()).results);

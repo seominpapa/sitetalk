@@ -5,6 +5,7 @@ interface ArchiveRoom { id: string; site_id?: string | null; title: string; purp
 interface ArchiveMessage { id: string; seq: number; user_name: string; created_at: number; content: string; type: string }
 interface ArchiveAttachment { id: string; filename: string; message_id: string }
 interface ArchiveClosure { conclusion: string; owner_name: string | null; due_date: string | null; note: string; closed_at: number }
+class ArchivePaused extends Error {}
 export interface ArchiveData { room: ArchiveRoom; messages: ArchiveMessage[]; attachments: ArchiveAttachment[]; participants: { name: string }[]; closure: ArchiveClosure }
 export interface Summary { summary: string; decisions: string[]; actions: string[]; keywords: string[] }
 
@@ -17,6 +18,8 @@ function rawBlock(content: string) {
   return `${fence}text\n${content}\n${fence}`;
 }
 const bulletList = (values: string[]) => values.length ? values.map(value => `- ${escape(value)}`).join('\n') : '- 기록 없음';
+const scheduledRoom = `EXISTS(SELECT 1 FROM rooms r LEFT JOIN sites s ON s.id=r.site_id
+  WHERE r.id=archive_jobs.room_id AND r.status='closed' AND (r.site_id IS NULL OR s.auto_summary_enabled=1))`;
 
 export function archiveKey(room: ArchiveRoom) {
   const title = room.title.normalize('NFC').replace(/[^\p{L}\p{N}_-]+/gu, '_').slice(0, 100) || 'room';
@@ -192,16 +195,18 @@ export async function runArchives(env: Env) {
   const now = Date.now();
   const executionDeadline = now + 720_000;
   await env.DB.prepare(`INSERT OR IGNORE INTO archive_jobs(room_id,status,attempts,created_at,updated_at)
-    SELECT id,'pending',0,?,? FROM rooms WHERE status='closed' AND closed_at<=?`).bind(now, now, now).run();
+    SELECT r.id,'pending',0,?,? FROM rooms r LEFT JOIN sites s ON s.id=r.site_id
+    WHERE r.status='closed' AND r.closed_at<=? AND (r.site_id IS NULL OR s.auto_summary_enabled=1)`).bind(now, now, now).run();
   const jobs = await env.DB.prepare(`SELECT room_id FROM archive_jobs WHERE attempts<5 AND
-    (status IN ('pending','failed') OR (status='processing' AND lease_until<?)) ORDER BY created_at LIMIT 10`).bind(now).all<{ room_id: string }>();
+    (status IN ('pending','failed') OR (status='processing' AND lease_until<?)) AND ${scheduledRoom}
+    ORDER BY created_at LIMIT 10`).bind(now).all<{ room_id: string }>();
   let processed = 0;
   let failed = 0;
   for (const job of jobs.results) {
     const claimedAt = Date.now();
     if (claimedAt + 65_000 > executionDeadline) break;
     const claim = await env.DB.prepare(`UPDATE archive_jobs SET status='processing',attempts=attempts+1,lease_until=?,updated_at=?,error=NULL
-      WHERE room_id=? AND attempts<5 AND (status IN ('pending','failed') OR (status='processing' AND lease_until<?)) RETURNING attempts`)
+      WHERE room_id=? AND attempts<5 AND (status IN ('pending','failed') OR (status='processing' AND lease_until<?)) AND ${scheduledRoom} RETURNING attempts`)
       .bind(claimedAt + 600_000, claimedAt, job.room_id, claimedAt).first<{ attempts: number }>();
     if (!claim) continue;
     try {
@@ -209,8 +214,12 @@ export async function runArchives(env: Env) {
       const summary = await summarizeArchive(configured, data, {
         deadline: Math.min(claimedAt + 480_000, executionDeadline),
         beforePart: async () => {
-          const owned = await env.DB.prepare("SELECT room_id FROM archive_jobs WHERE room_id=? AND status='processing' AND attempts=? AND lease_until>?").bind(job.room_id, claim.attempts, Date.now() + 65_000).first();
+          const owned = await env.DB.prepare(`SELECT r.site_id,s.auto_summary_enabled FROM archive_jobs j
+            JOIN rooms r ON r.id=j.room_id LEFT JOIN sites s ON s.id=r.site_id
+            WHERE j.room_id=? AND j.status='processing' AND j.attempts=? AND j.lease_until>?`)
+            .bind(job.room_id, claim.attempts, Date.now() + 65_000).first<{site_id: string | null; auto_summary_enabled: number | null}>();
           if (!owned) throw new Error('Archive lease lost');
+          if (owned.site_id !== null && owned.auto_summary_enabled !== 1) throw new ArchivePaused();
         },
       });
       const key = archiveKey(data.room);
@@ -228,6 +237,11 @@ export async function runArchives(env: Env) {
       ]);
       if (updated.meta.changes) processed++;
     } catch (error) {
+      if (error instanceof ArchivePaused) {
+        await env.DB.prepare("UPDATE archive_jobs SET status='pending',attempts=attempts-1,lease_until=NULL,error=NULL,updated_at=? WHERE room_id=? AND status='processing' AND attempts=?")
+          .bind(Date.now(), job.room_id, claim.attempts).run();
+        continue;
+      }
       failed++;
       const safeError = error instanceof Error && /^(OpenAI HTTP \d{3}|AI output [a-zA-Z ]+|Archive (context too large|record too large|request too large|processing time budget exceeded|lease lost)|Closed room or closure missing)$/.test(error.message) ? error.message : 'Archive failed; check configuration, service availability and retry';
       await env.DB.prepare("UPDATE archive_jobs SET status='failed',lease_until=NULL,error=?,updated_at=? WHERE room_id=? AND status='processing' AND attempts=?")

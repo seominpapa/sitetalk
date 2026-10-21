@@ -7,6 +7,7 @@ export interface Closure { conclusion: string; owner_id: string; due_date: strin
 export interface RoomDetail { room: Room; members: User[]; closure: Closure | null; archive: { status: string; error: string | null } | null }
 export type ApiResponse<T> = { success: true; data: T } | { success: false; error: { code: string; message: string } };
 export interface Site { id: string; name: string }
+export interface SummarySchedule { site_id: string; site_name: string; enabled: boolean }
 export interface SiteMembership { site_id: string; user_id: string; site_name: string; name: string; email: string; company: string; department: string; role: 'manager' | 'member'; status: 'pending' | 'approved' | 'rejected' }
 export interface SiteCreationRequest { id: string; user_id: string; site_name: string; name: string; email: string; company: string; department: string; status: 'pending' | 'approved' | 'rejected'; site_id: string | null; created_at: number; updated_at: number }
 export interface AiSettings { configured: boolean; source: 'database' | 'environment' | 'none'; storage_ready: boolean; model: string; updated_at: number | null; last_archive?: { room_id: string; title: string; status: string; error: string | null; updated_at: number } | null }

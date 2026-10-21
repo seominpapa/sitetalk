@@ -3,6 +3,7 @@ import { api } from '../../../packages/shared/api-client';
 import { ROOM_TYPES, type Room, type Site, type SiteMembership, type User } from '../../../packages/shared/types';
 import { Avatar, ErrorNotice, Icon, Modal, errorMessage, formatBytes } from './ui';
 import { AiConfiguration, ApprovalSettings } from './SiteSettings';
+import { SummaryScheduleSettings } from './SummarySchedule';
 
 export function MemberPicker({ users, selected, change }: { users: User[]; selected: string[]; change: (ids: string[]) => void }) {
   const [query, setQuery] = useState('');
@@ -42,7 +43,7 @@ async function pushRegistration() {
   await api('/push/subscriptions', { method: 'POST', body: JSON.stringify(subscription.toJSON()) });
 }
 export function Settings({ user, memberships, membershipsChanged, updated, close, logout }: { user: User; memberships: SiteMembership[]; membershipsChanged: () => void; updated: (value: User) => void; close: () => void; logout: () => Promise<void> }) {
-  const [tab, setTab] = useState<'profile' | 'approvals' | 'ai'>('profile');
+  const [tab, setTab] = useState<'profile' | 'approvals' | 'ai' | 'schedule'>('profile');
   const canApprove = user.role === 'admin' || memberships.some(member => member.status === 'approved' && member.role === 'manager');
   const [error, setError] = useState(''), [success, setSuccess] = useState(''), [busy, setBusy] = useState(false);
   const [permission, setPermission] = useState('Notification' in window ? Notification.permission : 'unsupported');
@@ -66,8 +67,8 @@ export function Settings({ user, memberships, membershipsChanged, updated, close
     } catch (error) { setError(errorMessage(error)); } finally { setBusy(false); }
   }
   return <Modal title="프로필 및 설정" close={close} wide={tab !== 'profile'}>
-    <div className="tabs settings-tabs" role="tablist" aria-label="설정 메뉴"><button role="tab" aria-selected={tab === 'profile'} onClick={() => setTab('profile')}>프로필·알림</button>{canApprove && <button role="tab" aria-selected={tab === 'approvals'} onClick={() => setTab('approvals')}>승인 설정</button>}{user.role === 'admin' && <button role="tab" aria-selected={tab === 'ai'} onClick={() => setTab('ai')}>AI 요약 설정</button>}</div>
-    {tab === 'ai' && user.role === 'admin' ? <AiConfiguration/> : tab === 'approvals' && canApprove ? <ApprovalSettings user={user} changed={membershipsChanged}/> : <form onSubmit={save}><div className="profile-heading"><Avatar name={user.name}/><div><strong>{user.name}</strong><p>{user.email}</p></div></div>
+    <div className="tabs settings-tabs" role="tablist" aria-label="설정 메뉴"><button role="tab" aria-selected={tab === 'profile'} onClick={() => setTab('profile')}>프로필·알림</button>{canApprove && <><button role="tab" aria-selected={tab === 'approvals'} onClick={() => setTab('approvals')}>승인 설정</button><button role="tab" aria-selected={tab === 'schedule'} onClick={() => setTab('schedule')}>자동요약 예약</button></>}{user.role === 'admin' && <button role="tab" aria-selected={tab === 'ai'} onClick={() => setTab('ai')}>AI 요약 설정</button>}</div>
+    {tab === 'schedule' && canApprove ? <SummaryScheduleSettings/> : tab === 'ai' && user.role === 'admin' ? <AiConfiguration/> : tab === 'approvals' && canApprove ? <ApprovalSettings user={user} changed={membershipsChanged}/> : <form onSubmit={save}><div className="profile-heading"><Avatar name={user.name}/><div><strong>{user.name}</strong><p>{user.email}</p></div></div>
       <label>이름<input name="name" defaultValue={user.name} required maxLength={80}/></label><div className="form-grid"><label>회사<input name="company" defaultValue={user.company} maxLength={120}/></label><label>부서<input name="department" defaultValue={user.department} maxLength={120}/></label></div>
       <div className="settings-section"><h3>현장 소속</h3>{memberships.length ? memberships.map(member => <p key={member.site_id} className="settings-info">{member.site_name} · {member.role === 'manager' ? '현장담당자' : '팀원'} · {({ pending: '승인 대기', approved: '승인됨', rejected: '반려됨' })[member.status]}</p>) : <p className="muted">배정된 현장이 없습니다.</p>}</div>
       <div className="notification-settings"><div><strong>새 메시지 알림</strong><p>브라우저 권한: {({ granted: '허용됨', denied: '차단됨', default: '아직 요청하지 않음', unsupported: '지원하지 않음' })[permission]}</p><small>현재 보고 있지 않은 대화의 새 메시지를 알려드려요.</small></div><button type="button" className={enabled && subscribed && permission === 'granted' ? 'secondary' : 'primary'} disabled={busy} onClick={() => void notification(!(enabled && subscribed && permission === 'granted'))}>{enabled && subscribed && permission === 'granted' ? '알림 끄기' : '알림 허용'}</button></div>

@@ -24,7 +24,7 @@ export function AiConfiguration() {
       <p className="muted">저장한 키는 다시 표시하지 않습니다. 관리자 설정에 저장된 키는 빈칸으로 저장하면 유지합니다.</p>
       {settings.source === 'environment' && <p className="settings-info">서버 환경 키를 관리자 설정으로 전환하려면 API 키를 입력해 주세요.</p>}
       <label>요약 모델<select value={model} onChange={event => setModel(event.target.value)}>{SUMMARY_MODELS.map(value => <option key={value}>{value}</option>)}</select></label>
-      <p className="settings-info">자동 보관: 매일 23:50 (한국시간). 설정 저장은 유료 API를 호출하지 않으며, 실제 요약 실행 시 OpenAI 사용료가 발생합니다.</p>
+      <p className="settings-info">자동 보관: 예약이 켜진 현장의 종료된 대화를 매일 23:50 (한국시간)에 처리합니다. 현장별 ON/OFF는 설정 → 자동요약 예약에서 변경합니다. 설정 저장은 유료 API를 호출하지 않으며, 실제 요약 실행 시 OpenAI 사용료가 발생합니다.</p>
       <div className="settings-section"><h4>마지막 자동 보관 결과</h4>{settings.last_archive ? <><p className="settings-info">{settings.last_archive.title} · {({ done: '성공', failed: '실패', pending: '대기 중', processing: '처리 중' } as Record<string, string>)[settings.last_archive.status] || settings.last_archive.status} · {dateTime(settings.last_archive.updated_at).toLocaleString('ko-KR')}</p>{settings.last_archive.error && <p className="error">{settings.last_archive.error}</p>}</> : <p className="settings-info">아직 자동 보관 기록이 없습니다.</p>}</div>
       {success && <p className="success" role="status">{success}</p>}
       <div className="modal-actions"><button className="primary" disabled={busy || !settings.storage_ready || (settings.source !== 'database' && !key.trim())}>{busy ? '저장 중…' : 'AI 설정 저장'}</button></div>

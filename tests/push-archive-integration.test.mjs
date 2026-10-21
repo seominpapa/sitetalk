@@ -9,7 +9,7 @@ import { aiSettings } from '../apps/worker/src/ai-settings.ts';
 
 function setup() {
   const db = new DatabaseSync(':memory:');
-  for (const migration of ['0001_initial.sql', '0002_sites_and_settings.sql']) db.exec(readFileSync(new URL(`../database/migrations/${migration}`, import.meta.url), 'utf8'));
+  for (const migration of ['0001_initial.sql', '0002_sites_and_settings.sql', '0004_summary_schedule.sql']) db.exec(readFileSync(new URL(`../database/migrations/${migration}`, import.meta.url), 'utf8'));
   for (const id of ['sender', 'visible', 'hidden', 'disabled']) db.prepare('INSERT INTO users(id,name,email,notification_enabled,created_at) VALUES (?,?,?,?,1)').run(id, id, `${id}@example.com`, id === 'disabled' ? 0 : 1);
   db.exec("INSERT INTO rooms(id,title,purpose,created_by,created_at) VALUES ('room','발파 협의','시간 변경','sender',1)");
   for (const id of ['sender', 'visible', 'hidden', 'disabled']) db.prepare("INSERT INTO room_members VALUES ('room',?,1)").run(id);
@@ -26,6 +26,82 @@ function closeRoom(db) {
   db.exec("INSERT INTO room_closures(room_id,conclusion,closed_by,closed_at) VALUES ('room','변경 합의','sender',3)");
 }
 const response = () => Response.json({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ summary: '시간 변경', decisions: ['16:30 발파'], actions: [], keywords: ['발파'] }) }] }] });
+
+function siteRoom(db, enabled = 0) {
+  db.prepare("INSERT INTO sites(id,name,created_by,created_at,auto_summary_enabled) VALUES('site','검증 현장','sender',1,?)").run(enabled);
+  db.exec("UPDATE rooms SET site_id='site' WHERE id='room'");
+}
+
+test('disabled schedule skips recovery and existing pending/failed/expired jobs without spending retry budget; re-enable resumes', async t => {
+  for (const status of [null,'pending','failed','processing']) {
+    const {db,env}=setup(); t.after(()=>db.close()); siteRoom(db); closeRoom(db);
+    if (status) db.prepare("INSERT INTO archive_jobs(room_id,status,attempts,lease_until,created_at,updated_at) VALUES('room',?,2,1,1,1)").run(status);
+    const before=db.prepare('SELECT * FROM archive_jobs').get();
+    const fetch=t.mock.method(globalThis,'fetch',async()=>response());
+    assert.deepEqual(await runArchives(env),{processed:0,failed:0,configurationMissing:false});
+    assert.equal(fetch.mock.callCount(),0);
+    assert.deepEqual(db.prepare('SELECT * FROM archive_jobs').get(),before);
+    db.exec("UPDATE sites SET auto_summary_enabled=1 WHERE id='site'");
+    assert.equal((await runArchives(env)).processed,1);
+    assert.equal(fetch.mock.callCount(),1);
+    assert.equal(db.prepare('SELECT attempts FROM archive_jobs').get().attempts,status?3:1);
+    fetch.mock.restore();
+  }
+});
+
+test('schedule disabled after selection is rechecked atomically at claim', async t => {
+  const {db,env}=setup(); t.after(()=>db.close()); siteRoom(db,1); closeRoom(db);
+  const prepare=env.DB.prepare;
+  t.mock.method(env.DB,'prepare',function(sql){
+    if (sql.startsWith('UPDATE archive_jobs SET status=\'processing\'')) db.exec("UPDATE sites SET auto_summary_enabled=0 WHERE id='site'");
+    return prepare.call(this,sql);
+  });
+  const fetch=t.mock.method(globalThis,'fetch',async()=>response());
+  assert.equal((await runArchives(env)).processed,0);
+  assert.equal(fetch.mock.callCount(),0);
+  const job=db.prepare('SELECT status,attempts FROM archive_jobs').get();
+  assert.equal(job.status,'pending'); assert.equal(job.attempts,0);
+});
+
+test('schedule OFF before first paid chunk pauses owned job without consuming retry budget', async t => {
+  const {db,env,files}=setup(); t.after(()=>db.close()); siteRoom(db,1); closeRoom(db);
+  const prepare=env.DB.prepare;
+  t.mock.method(env.DB,'prepare',function(sql){
+    if (sql.startsWith("SELECT * FROM rooms WHERE id=")) db.exec("UPDATE sites SET auto_summary_enabled=0 WHERE id='site'");
+    return prepare.call(this,sql);
+  });
+  const fetch=t.mock.method(globalThis,'fetch',async()=>response());
+  assert.deepEqual(await runArchives(env),{processed:0,failed:0,configurationMissing:false});
+  assert.equal(fetch.mock.callCount(),0); assert.equal(files.size,0);
+  assert.deepEqual({...db.prepare('SELECT status,attempts,lease_until,error FROM archive_jobs').get()},{status:'pending',attempts:0,lease_until:null,error:null});
+});
+
+test('schedule OFF between chunks prevents another paid request and partial archive, then ON resumes originals', async t => {
+  const {db,env,files}=setup(); t.after(()=>db.close()); siteRoom(db,1);
+  db.exec("INSERT INTO site_memberships(site_id,user_id,role,status,created_at,updated_at) VALUES('site','sender','manager','approved',1,1)");
+  for (let i=0;i<40;i++) db.prepare("INSERT INTO messages(id,room_id,user_id,type,content,seq,created_at) VALUES(?,'room','sender','text',?,?,2)").run(`long-${i}`,'가'.repeat(9500),i+2);
+  closeRoom(db);
+  let disable=true;
+  const fetch=t.mock.method(globalThis,'fetch',async()=>{
+    if(disable) db.exec("UPDATE sites SET auto_summary_enabled=0 WHERE id='site'");
+    return response();
+  });
+  assert.deepEqual(await runArchives(env),{processed:0,failed:0,configurationMissing:false});
+  assert.equal(fetch.mock.callCount(),1); assert.equal(files.size,0);
+  assert.equal(db.prepare('SELECT count(*) n FROM summary_records').get().n,0);
+  assert.equal(db.prepare('SELECT attempts FROM archive_jobs').get().attempts,0);
+  disable=false; db.exec("UPDATE sites SET auto_summary_enabled=1 WHERE id='site'");
+  assert.equal((await runArchives(env)).processed,1);
+  assert.ok(fetch.mock.callCount()>2); assert.equal(files.size,1);
+  assert.equal(db.prepare('SELECT attempts FROM archive_jobs').get().attempts,1);
+});
+
+test('OFF while final paid request is already running lets its complete result finish', async t => {
+  const {db,env,files}=setup(); t.after(()=>db.close()); siteRoom(db,1); closeRoom(db);
+  const fetch=t.mock.method(globalThis,'fetch',async()=>{db.exec("UPDATE sites SET auto_summary_enabled=0 WHERE id='site'");return response();});
+  assert.equal((await runArchives(env)).processed,1);
+  assert.equal(fetch.mock.callCount(),1); assert.equal(files.size,1);
+});
 
 test('archive claims once across concurrent cron calls, stores raw original, then never repeats done jobs', async t => {
   const { db, env, files } = setup();
