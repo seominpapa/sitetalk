@@ -1,286 +1,254 @@
 # Site Talk
 
-Construction Site Communication — 건설현장의 목적 있는 대화를 만들고, 협의가 끝나면 원문과 결론을 현장 지식으로 보존하는 실시간 업무 메신저입니다.
+건설현장의 실시간 업무 대화, 가입 승인, AI 대화 요약·원문 검색을 제공하는 웹앱입니다. 이 README는 **저장소를 복제해 자신의 서비스와 관리자 계정을 만드는 설치자**를 위한 안내입니다. 기존 운영자의 계정·도메인·API 키는 설치자에게 전달되지 않습니다.
 
-[Site Talk](https://site-talk.sjkwak300.workers.dev)을 Cloudflare에 배포했습니다. 요구사항별 증거는 [수용 기준](docs/acceptance.md), 단계별 변경·시험 기록은 [진행 기록](docs/progress.md)에 정리합니다. 아래 과거 배포 이력의 버전·계정·검증 상태는 당시 기준이며 최신 변경은 상단 항목을 우선합니다.
+## 먼저 확인할 배포 범위
 
-## 2026-10-21 최신 변경 — 현장별 자동요약 예약·커스텀 도메인
+배포 플랫폼은 운영자가 선택합니다. 다만 **현재 백엔드 구현은 Cloudflare Workers용이며, 다른 플랫폼의 실행 어댑터는 아직 없습니다.** 문서의 공통 운영 요구사항과 아래의 구현된 배포 예시를 구분해 주세요.
 
-- 현장담당자와 관리자는 `설정 → 자동요약 예약`에서 현장별 ON/OFF를 변경합니다. 담당자는 현재 승인된 자기 현장만, 관리자는 전체 현장을 관리하며 팀원·대기·반려 계정은 API에서도 차단합니다.
-- 예약은 매일 **23:50 한국시간**이며 종료된 대화만 처리합니다. 진행 중인 대화를 자동 종료하지 않습니다. 기존 동작을 보존하기 위해 현장 기본값은 ON입니다. ON/OFF 저장 자체는 OpenAI를 호출하지 않습니다.
-- OFF인 현장의 대기·실패·만료된 작업은 보류하고 재시도 횟수를 소모하지 않습니다. 다시 ON하면 다음 예약에서 처리합니다. 분할 요약도 다음 호출 전에 상태를 확인하되, 이미 시작된 API 요청은 완료될 수 있습니다. 완료된 요약·원문은 계속 조회할 수 있습니다. 현장 없는 과거 방은 기존 예약 처리 방식을 유지합니다.
-- 모든 요약은 관리자 공통 API 키·모델을 사용합니다. 앞선 운영 시연에서 실제 요약 1건을 생성하고 담당자·팀원 2명의 검색·원문·다운로드를 확인했으며 해당 데이터는 보존합니다. 예약 시각의 실제 Cron 실행과 실제 단말 Push는 이 검증과 별개입니다.
-- `sitetalk.seominpapa.com`은 Cloudflare에서 `site-talk`의 Custom Domain으로 등록했습니다. 기존 CI 토큰의 권한을 확대하지 않도록 도메인 연결은 Cloudflare에서 별도 관리하고 Wrangler `routes`에는 넣지 않습니다. 앱 배포는 이 연결을 유지하고 두 주소의 health를 검사합니다. 기존 `workers.dev` 주소도 유지합니다. 새 origin에서는 다시 로그인해야 하고 브라우저 알림도 별도 허용·구독이 필요합니다.
-- 추가 전용 migration `0004_summary_schedule.sql`을 DB 백업·복원 검증 후 코드보다 먼저 적용합니다. 구버전 Worker는 OFF 설정을 무시하므로 코드 롤백 전에는 Cron을 먼저 중지해야 합니다. 스키마를 임의로 제거하거나 신규 사용자 쓰기 후 DB 전체를 덮어쓰지 않습니다.
-- 사용자 승인에 따라 `main`에 push하고 GitHub Actions로 배포합니다. 아래 기록은 배포 전 검증 결과이며 실제 배포·도메인·운영 검증 결과는 비공개 릴리스 기록과 최종 보고로 구분합니다.
+| 배포 방식 | 현재 상태 |
+|---|---|
+| Cloudflare Workers + D1 + Durable Objects + R2 | 현재 구현된 전체 앱 배포 경로. 아래에 초기 설치 예시 제공 |
+| AWS·GCP·Azure·VPS·온프레미스 등 | 선택 가능한 이식 대상이지만 HTTP/DB/저장소/WebSocket/예약 실행 및 관리자 발급 어댑터 개발·검증 필요. 지금 바로 실행하는 배포 명령은 제공하지 않음 |
+| Vercel·Netlify·정적 웹 호스팅 등 | `dist`는 프런트엔드 산출물만 포함. 이것만 배포하면 로그인·채팅·첨부·요약 백엔드는 동작하지 않음. 기존 백엔드로의 동일 출처 프록시 또는 별도 인증·CORS 설계 필요 |
+| 로컬 개발 | Wrangler가 백엔드를 에뮬레이션. 독립적인 Node 서버나 Docker 배포 방식은 아님 |
 
-## 2026-10-21 현장 승인·공통 AI 설정 확장 (운영 반영)
+현재 소스의 플랫폼 의존성은 [Env](apps/worker/src/env.ts), [방별 실시간 처리](apps/worker/src/room.ts), [HTTP·예약 진입점](apps/worker/src/index.ts)에 있습니다. `npm run build`는 정적 UI를 만들 뿐, 이 의존성을 제거하지 않습니다. 다른 플랫폼에서 전체 앱을 운영하려면 이 경계를 실제로 구현하고 아래 수용 확인을 다시 통과해야 합니다.
 
-이번 확장과 후속 가입 기능은 사용자 승인에 따라 운영 DB 백업·마이그레이션·배포를 완료했습니다. 현재 운영 버전은 `7e35a8bb-dfdf-4590-8b3e-99711782864f`이며 최신 요약 모델 카탈로그도 반영했습니다. 단위·통합 103개, 로컬 브라우저 20개와 운영 모델 목록 조회 시험을 통과했습니다. 앞선 배포에서는 운영 가입·현장 생성 요청 화면 시험 1/1도 통과했습니다. 요청 스트림 오류도 수정했으며 로컬 E2E 실행 중 같은 로그가 발생하면 시험을 실패 처리합니다. 미검증 범위와 운영 검증 결과는 수용 기준 최신 항목에 기록했습니다.
+## 플랫폼에 관계없이 필요한 구성
 
-관리자 `설정 → AI 요약 설정 → 요약 모델`에서 `gpt-6-luna`, `gpt-6.1-sol`, `gpt-6-astra` 및 기존 네 모델을 선택할 수 있습니다. 이번 카탈로그 배포는 기존 API 키·선택 모델·기본값을 변경하지 않으며, 실제 호출 권한·비용·품질은 사용 중인 OpenAI 프로젝트와 모델에 따라 별도 확인이 필요합니다.
+| 구성 | 필요한 동작 |
+|---|---|
+| HTTPS 웹·API 서버 | SPA 경로 fallback, 같은 origin의 `/api`, 안전한 세션 쿠키, WebSocket upgrade |
+| 영구 SQL 저장소 | 사용자·권한·대화·요약 저장, migration, FK·unique·CHECK·trigger 및 원자적 batch 보장. 현재 SQL은 SQLite/D1용이므로 다른 DB에 그대로 적용한다고 가정하지 않음 |
+| 실시간 처리 | 방별 쓰기 직렬화, 메시지 순서·중복 방지, 권한 재확인, 연결 복구. 현재 Durable Object 구현을 일반 WebSocket 서버로 단순 치환할 수는 없음 |
+| 비공개 객체 저장소 | 첨부와 Markdown 보관. 현재 R2 API를 사용하므로 S3 호환 저장소도 접속 주소만 바꾸는 방식으로 전환되지는 않음 |
+| 예약 작업 | 매일 23:50 한국시간(UTC `50 14 * * *`) 요약 처리, lease·재시도·만료 데이터 정리 |
+| 비밀 관리 | 서버 암호화 키, 선택적 Push 키, 배포 자격증명. 브라우저 번들·Git·로그에 비밀값을 넣지 않음 |
+| 관리자 초기화 | 설치자가 선택한 이메일로 별도 관리자 생성. **첫 가입자를 자동 관리자로 만들지 않음** |
+| 외부 AI API | 현재는 OpenAI Responses API 구현. 다른 AI 공급자나 사용자 지정 API URL은 미구현 |
 
-- **가입**: 로그인 화면의 `가입 신청`에서 팀원은 기존 현장을 선택하고, 현장담당자는 새 현장 생성을 요청합니다. 계정은 일반 사용자로 생성되며 승인 전에는 현장 권한이 없습니다. 대기/반려 회원은 현장 대화·직원 목록·공유 요약에 접근할 수 없습니다.
-- **승인 및 담당자 지정**: `설정 → 승인 설정`. 관리자는 현장을 등록하고 기존 사용자를 팀원/현장담당자로 배정·승인하거나 팀원을 승격합니다. 현장담당자는 자신이 담당하며 현재 승인된 현장의 대기 신청만 승인·반려할 수 있습니다. 현장 역할은 전역 관리자 권한과 분리되며 승인 이력을 저장합니다.
-- **대화방**: 생성 시 현장을 선택하고 승인된 현장 직원만 초대합니다. 승인 취소는 기존 세션의 방 접근·WebSocket 전달·Push 대상에도 반영됩니다. 기존 `site_id=NULL` 대화는 기존 참여자 ACL만 유지하고 현장 전체 공유에서 제외합니다. 기존 계정은 관리자가 현장에 배정해야 새 현장 대화를 만들 수 있습니다.
-- **공통 API 키**: 관리자 `설정 → AI 요약 설정`에서 등록합니다. 서버가 별도 `AI_SETTINGS_ENCRYPTION_KEY`로 AES-GCM 암호화해 D1에 보관하며 키 원문을 API 응답·로그·브라우저 저장소에 반환하지 않습니다. 등록된 키·모델을 매 Cron 시작 시 한 번 읽어 모든 현장/방의 요약에 공통 적용합니다. DB 설정 행이 없을 때만 기존 서버 `OPENAI_API_KEY`를 사용합니다. 저장된 설정의 복호화가 실패하면 다른 키로 우회하지 않고 작업을 중단하며 재시도 예산도 소모하지 않습니다. DB 등록 후 빈 키로 저장하면 기존 등록 키를 유지합니다.
-- **요약과 원문**: 승인된 현장담당자/팀원은 `현장 대화 요약`에서 같은 현장의 완료된 AI 요약을 제목·프로젝트·현장명·요약·결정·조치·키워드로 검색합니다. 결과의 `대화 원문 열람`은 비참여자도 원문과 첨부를 읽는 전용 화면이며 대화방 참여·작성·초대·읽음·WebSocket 권한을 추가하지 않습니다. API 검색은 최신 100개 결과를 반환하며 원문은 50개씩 이전 기록을 읽어 전체를 열람합니다.
+채팅·가입 승인·원문 보관은 OpenAI 키 없이 시작할 수 있습니다. AI 요약은 API 키·사용 가능한 모델·과금 설정이 필요하고, Push는 VAPID 설정과 사용자 단말의 알림 허용이 별도로 필요합니다. 플랫폼 요금과 AI API 요금은 설치자가 자신의 계정에서 확인해야 합니다.
 
-운영에는 `0002_sites_and_settings.sql`과 **독립적인 무작위 32바이트** Worker Secret `AI_SETTINGS_ENCRYPTION_KEY`를 적용했습니다. 암호화 키는 ignored `.wrangler/secrets/ai-settings-encryption.key`에 0600으로 백업했으며 원문은 출력하지 않았습니다. 이 파일은 프런트 환경변수나 공개 vars에 넣지 않으며, 잃으면 저장된 API 키를 복호화할 수 없으므로 별도 안전한 보관이 필요합니다. 로컬 E2E의 공개 테스트용 키는 운영에 사용하지 않습니다. 관리자가 공통 API 키를 등록했으며 운영 화면에서 등록 상태·암호화 준비와 키 비노출을 확인했습니다. 실제 연결·잔액·원격 Cron→R2 성공은 별도 확인 대상이고 설정 저장 자체는 유료 API를 호출하지 않습니다.
+## 1. 저장소 클론과 로컬 확인
 
-```sh
-# 로컬 검증만 실행 (원격 리소스 변경 없음)
-npm run db:local
-npm run test:seed
-npm test
-npm run typecheck
-npm run build
-npm run test:e2e
-```
-
-기존 배포 환경의 검증 이력은 아래 기록과 `docs/acceptance.md`의 2026-09-13 항목이며, 이번 확장의 최신 결과와 미검증 항목은 문서 끝의 2026-10-21 항목에 별도로 기록합니다.
-
-### 운영 배포·복구 절차
-
-2026-10-21 운영 반영 후 확인: VAPID Secret 3종과 `AI_SETTINGS_ENCRYPTION_KEY`가 등록됐고 미적용 D1 migration은 없습니다. 관리자 공통 API 설정은 DB에 등록됐으며 카탈로그 배포 전후 암호문·모델·수정 정보가 완전히 같은 것을 확인했습니다. 시험용 현장·계정은 정리했습니다. 실제 사용자는 현장 가입·생성 요청과 관리자 승인 절차를 진행하며, 과거 방은 기존 참여자가 계속 열람합니다.
-
-이번에 승인받아 수행한 순서 및 향후 배포 시 준수할 절차:
-
-1. 현재 운영 버전과 DB 복구 지점을 기록하고, DB 백업/복구 가능 여부를 확인합니다. 기존 사용자의 최초 현장·담당자 배정 계획도 확인합니다.
-2. 독립적인 무작위 32바이트 암호화 키를 안전한 비밀 저장소에 백업한 뒤 Worker Secret으로 등록합니다. 이 단계도 원격 변경이므로 사전 승인 대상입니다.
-3. 운영 D1에 `0002_sites_and_settings.sql`을 적용한 뒤 테스트한 Worker/정적 자산을 배포합니다. 기존 방을 자동으로 현장에 이관하지 않습니다.
-4. 관리자 로그인 후 현장 등록·담당자/팀원 배정·가입 승인·AI 요약 설정을 진행하고 권한·원문/첨부·WebSocket을 재확인합니다. 키 등록 자체는 연결/잔액 확인이 아닙니다.
-5. OpenAI 잔액과 유료 호출 승인을 별도로 확인한 뒤 실제 요약→R2 검증을 진행합니다.
-
-실제 배포는 수동 Wrangler로 완료했고 main push 및 Actions 수동 실행은 하지 않았습니다. 기존 Actions는 main push/수동 실행 시 운영 배포가 가능하므로 승인 없이 트리거하지 않습니다. 배포 후 문제가 생기면 DB를 파괴적으로 되돌리지 말고 쓰기 중단·권한 보존을 우선합니다. 이전 Worker로 단순 롤백하면 새 현장 승인 검사가 빠질 수 있어 안전한 롤백으로 간주하지 않습니다.
-
-## Architecture
-
-```text
-React + Vite + TypeScript / PWA
-          │ 같은 origin의 /api
-          ▼
-Cloudflare Worker ── D1: 사용자·세션·방·메시지·읽음·종료 정보
-          │
-          ├─ 방별 Durable Object ─ WebSocket 실시간 전달
-          ├─ R2 ─ 인증된 첨부파일 업로드·다운로드
-          └─ Web Push ─ 현재 해당 방을 보지 않는 참여자 알림
-
-Cron(한국 시간 23:50) ─ D1 종료 방 ─ OpenAI ─ Markdown ─ R2
-```
-
-프론트엔드와 API 코드는 분리되어 있으며, MVP 배포에서는 Worker Static Assets로 같은 origin에서 제공합니다. 쿠키·WebSocket·파일 인증을 일관되게 유지하며 프론트엔드의 별도 Pages 배포는 필수 조건이 아닙니다. 향후 앱 클라이언트는 공통 API를 사용할 수 있으나, 다른 origin을 이용할 때는 인증·CORS 정책을 함께 설계해야 합니다.
-
-Docker, Python, Railway, 상시 Node 서버를 사용하지 않습니다. Node는 개발·빌드·시험 도구입니다. 업무 데이터는 D1에 영구 저장하고, R2에는 파일과 Markdown만 저장합니다. AI 처리 실패는 채팅 저장 경로에 전파하지 않습니다.
-
-```text
-apps/web/                React UI, PWA, 반응형 스타일
-apps/worker/src/         HTTP API, 인증, 방별 DO, Push, Archive
-packages/shared/        타입과 API 클라이언트
-database/migrations/    D1 SQL migration
-tests/                  단위·통합·브라우저 E2E
-scripts/                로컬 테스트 사용자, VAPID 도구
-docs/                   진행 기록과 수용 기준
-wrangler.jsonc          Worker, D1, DO, R2, Cron 설정
-```
-
-## Local Development
-
-Node.js 24 이상, npm을 사용합니다. 이 작업 환경에서 확인한 Node 버전은 26.5.0입니다. Node 내장 TypeScript 실행·SQLite를 시험에 사용합니다.
+준비물: Git, Node.js **24 이상**, npm. 공개 저장소를 클론해 사용할 수 있습니다. 자신의 변경을 push하거나 자동 배포하려면 먼저 자신의 GitHub 계정으로 fork하고 아래 클론 주소를 해당 fork 주소로 바꾸세요.
 
 ```sh
-npm install
+git clone https://github.com/seominpapa/sitetalk.git
+cd sitetalk
+npm ci
 npm run db:local
 npm run test:seed
 npm run build
 npx wrangler dev --port 8787 --test-scheduled
 ```
 
-브라우저에서 `http://127.0.0.1:8787`에 접속합니다. 로컬 테스트 사용자 3명의 무작위 비밀번호는 Git에서 제외된 `.wrangler/test-users.json`에만 저장됩니다. `test:seed`는 원격 DB를 수정하지 않으며, 재실행하면 새로운 테스트 계정이 추가됩니다. 테스트 계정 파일을 커밋·공유하지 마세요.
+브라우저에서 `http://127.0.0.1:8787`을 엽니다. 로컬 시험용 관리자 1명과 일반 계정 2명의 무작위 로그인 정보는 Git 제외 파일 `.wrangler/test-users.json`에 저장됩니다. 안전한 로컬 편집기로만 확인하세요. `test:seed`는 원격 DB를 변경하지 않으며 재실행하면 새 계정을 추가합니다. 이 시험용 계정은 운영 관리자 발급을 대신하지 않습니다.
 
-UI를 실시간 수정하려면 API 실행을 유지한 별도 터미널에서 `npm run dev`를 실행하고 `http://127.0.0.1:5173`을 엽니다. Vite가 `/api` HTTP 및 WebSocket을 8787로 전달합니다. 통합·PWA 검증은 빌드 후 8787 origin을 기준으로 합니다.
-
-로컬 비밀값은 저장소 루트의 `.dev.vars`에 설정합니다. 변수 목록은 `.env.example`을 참고하세요. 이 파일에는 실제 값을 넣지 않습니다. 브라우저용 `VITE_` 변수에 OpenAI 키·VAPID 개인키를 넣으면 안 됩니다.
+UI 개발은 별도 터미널의 `npm run dev`와 `http://127.0.0.1:5173`을 사용합니다. Vite가 API와 WebSocket을 8787로 전달합니다. PWA·통합 확인은 빌드 후 8787 기준으로 진행합니다.
 
 ```sh
 npm run typecheck
 npm test
+npm run build
 npm run test:e2e
 ```
 
-E2E는 `.wrangler/test-users.json`을 사용하고, 8787 서버가 없으면 Playwright 설정이 로컬 Worker를 시작합니다. 로컬에서는 설치된 Chrome을 사용하며, CI에서는 Playwright Chromium을 설치합니다. `E2E_BASE_URL`로 검증 origin을 바꾸면 자동 서버 시작을 생략하며 원격 검증 계정·테스트 데이터 준비도 별도로 필요합니다. 다른 환경의 계정을 로컬 fixture로 간주하지 마세요.
+로컬 E2E는 설치된 Chrome과 `.wrangler/test-users.json`을 사용합니다. CI에서는 Playwright Chromium을 설치합니다. E2E 실행 전 수동으로 띄운 8787 서버를 종료하세요. 시험 설정은 자체 서버를 시작하며 `E2E_BASE_URL` 지정 시에는 외부 환경에 쓰기가 발생할 수 있으므로 운영 주소를 무작정 넣지 마세요.
 
-## Cloudflare 설정
+## 2. 설치자 자신의 배포 환경 준비
 
-Cloudflare 계정에 로그인하고 대상 계정을 확인합니다.
+어느 플랫폼이든 **개발·운영 데이터, 비밀값, 도메인을 기존 운영 환경과 분리**해야 합니다. 현재 저장소에는 기존 운영용 설정이 남아 있으므로 클론 직후 `npm run deploy`, `npm run db:remote`, `--remote` 사용자 발급이나 자동 배포를 실행하면 안 됩니다.
 
-```sh
-npx wrangler login
-npx wrangler whoami
-```
+- 자신의 공급자 계정·프로젝트와 과금 조건을 확인합니다.
+- 자신의 DB와 비공개 파일 저장소를 생성하고, 연결 대상과 migration 경로를 확인합니다.
+- 플랫폼이 달라지면 위 의존성의 어댑터와 관리자 발급 도구부터 구현·검증합니다. 아래 `wrangler` 명령은 해당 구현에만 사용합니다.
+- 자신의 도메인·HTTPS·API·WebSocket 경로를 연결합니다. 기존 `sitetalk.seominpapa.com`이나 기존 운영자의 `workers.dev` 주소를 새 서비스 주소로 사용하지 않습니다.
+- CI가 있으면 기존 배포 job·계정·URL을 자신의 환경에 맞게 교체하거나 비활성화합니다. 단순 clone은 자동 배포가 아니며, GitHub Secrets는 복사되지 않습니다.
+- 초기 관리자와 API 설정을 마친 후 별도 사용자 세션으로 권한·대화·원문 접근을 확인합니다.
 
-Workers Paid 계정에서 사용자 승인으로 Workers/D1 범위의 Wrangler 인증을 완료했습니다. R2도 약관과 반복 초과 사용량 과금에 대한 명시적 승인 후 활성화를 확인했습니다. `wrangler.jsonc`에는 대상 `account_id`와 실제 D1 ID를 고정했습니다.
+### 현재 구현된 예시: Cloudflare에 독립 설치
 
-배포 URL은 `https://site-talk.sjkwak300.workers.dev`이며 VAPID 등록 후 확인한 활성 버전은 `036c5e8b-6dfa-41a5-b395-1f2b02a1fd97`입니다. Worker·D1·DO·비공개 R2 바인딩과 Cron 배포, health 200까지 확인했습니다. 이는 GitHub Actions 자동 배포 성공이나 실제 Push·AI 처리 성공과는 별도 증거입니다.
+이 절은 전체 앱을 실제 실행할 수 있는 **현재 구현의 한 경로**입니다. 다른 플랫폼 배포를 완료했다는 의미는 아닙니다.
 
-## D1 생성 방법
-
-현재 `site-talk` D1은 APAC에 생성되어 있고 ID는 `b274b206-a838-4ae2-8a05-30a475682abe`입니다. 최초 migration 23개 명령 적용과 `messages_active_room` trigger를 확인했습니다. 아래 생성 명령은 새로운 환경을 구성할 때의 참고이며 기존 DB를 다시 만들 필요는 없습니다.
+1. `npx wrangler login`, `npx wrangler whoami`로 **자신의 계정 ID**를 확인합니다.
+2. 원격 명령 전에 `wrangler.jsonc`의 `account_id`를 자기 계정으로 변경하고, 기존 `d1_databases[0].database_id` 속성 전체를 삭제합니다. 빈 문자열·`null`로 남기거나 기존 서비스의 실제 ID를 그대로 사용하지 마세요.
+3. 아래 명령으로 자기 계정의 새 리소스를 생성합니다. 같은 이름의 리소스가 이미 있으면 기존 데이터 유무를 먼저 확인하며, 임의로 재사용·삭제하지 않습니다.
 
 ```sh
 npx wrangler d1 create site-talk
-```
-
-출력의 `database_id`를 `wrangler.jsonc`의 `d1_databases`에 넣습니다. `binding`은 `DB`, `database_name`은 `site-talk`, `migrations_dir`는 `database/migrations`입니다.
-
-```sh
-npm run db:remote
-```
-
-실제 DB 생성·migration은 계정 데이터를 변경합니다. 배포 대상 계정과 DB 이름을 확인한 후 실행합니다.
-
-## R2 생성 방법
-
-현재 R2는 활성화되어 있으며 `site-talk-files`를 APAC·Standard·비공개로 생성했습니다. `r2.dev` 퍼블릭 액세스 비활성도 확인했습니다. 아래 명령은 새로운 환경 구성 시 참고입니다. 다른 계정에서 R2가 비활성 상태라면 결제 조건을 검토하고 활성화해야 합니다.
-
-```sh
 npx wrangler r2 bucket create site-talk-files
 ```
 
-버킷 바인딩은 `FILES`입니다. 퍼블릭 액세스는 필요하지 않습니다. 첨부는 `attachments/{roomId}/{attachmentId}`, 아카이브는 `site-talk-archive/YYYY/MM/DD/{제목}--{roomId}.md`에 저장합니다. 같은 제목의 방도 서로 덮어쓰지 않습니다.
+4. 출력된 **새 D1 ID**를 `wrangler.jsonc`에 넣습니다. 이름·바인딩은 다음과 같이 유지하면 기존 도구를 그대로 사용할 수 있습니다.
 
-파일은 방 참여자 인증을 통과한 `/api/attachments/{id}`로 내려받습니다. PNG/JPEG/GIF/WebP/PDF의 실제 byte signature를 확인한 파일만 제한된 inline 미리보기를 제공합니다. PDF라고 선언한 HTML 등 불일치 파일은 `application/octet-stream`과 attachment 다운로드로 처리합니다. 파일당 최대 20MB입니다. 관리자의 현재 저장량 표시는 D1에 기록된 첨부 크기 합이며, R2 청구 사용량이나 Markdown 크기까지 포함한 실측값은 아닙니다.
+| 항목 | 설정 |
+|---|---|
+| Worker `name` | 자기 계정 안에서 사용할 이름. 기본 `site-talk`; 기존 동명의 Worker와 충돌하지 않는지 확인 |
+| D1 `binding` / `database_name` | `DB` / `site-talk` |
+| D1 `database_id` | **본인이 새로 만든 DB ID** |
+| D1 `migrations_dir` | `database/migrations` |
+| R2 `binding` / `bucket_name` | `FILES` / `site-talk-files`. 다른 버킷명을 선택했다면 설정도 변경 |
+| Durable Object | `ROOMS` → `ChatRoom`, 기존 `new_sqlite_classes` migration 유지 |
+| 정적 자산 | `dist`와 기존 SPA fallback·API 우선 설정 유지 |
+| 예약 | `50 14 * * *` (UTC), 한국시간 23:50 |
 
-## Durable Objects 설정
+현재 관리자 발급·migration·시험 도구는 D1 이름 `site-talk`을 사용합니다. DB 이름을 바꾸려면 `package.json`, `scripts/create-user.mjs`, `scripts/test-users.mjs`의 호출도 함께 변경해야 합니다. 바인딩 `DB`, `FILES`, `ROOMS`는 서버 코드가 참조하므로 임의로 바꾸지 마세요.
 
-`wrangler.jsonc`에 `ROOMS → ChatRoom` 바인딩과 `new_sqlite_classes: ["ChatRoom"]` migration이 정의되어 있습니다. 최초 Worker 배포 시 해당 namespace를 만듭니다. 방 ID를 `idFromName`에 전달해 방마다 DO 하나를 사용합니다.
+R2는 비공개로 유지합니다. 파일 공개 URL은 필요하지 않으며 다운로드는 인증된 API를 통과합니다. R2 활성화·플랜·초과 사용 요금은 자기 계정에서 확인하세요.
 
-메시지·종료·참여자 변경은 방별로 직렬화합니다. 메시지는 D1 batch에 먼저 저장되며 `seq`로 정렬하고 `(room_id,user_id,client_id)`로 중복을 방지합니다. 종료된 방에는 DB trigger도 새 메시지를 차단합니다. DO WebSocket hibernation과 visibility heartbeat로 접속 상태를 관리합니다.
-
-## 사용자 인증·프로필
-
-관리자는 계정을 발급할 수 있으며, 일반 사용자는 공개 가입 신청 후 현장 승인을 받습니다. 이메일만 입력하는 테스트 로그인 API는 없습니다. 비밀번호는 salt를 사용한 PBKDF2 해시, 세션은 무작위 토큰의 SHA-256 해시로 저장합니다. 브라우저에는 HttpOnly·SameSite 쿠키를 발급하며 HTTPS에서는 Secure를 적용합니다.
-
-신규 가입 비밀번호는 8자 이상이며 숫자와 특수문자를 반드시 포함해야 합니다. 비밀번호를 두 번 입력해 일치 여부를 확인합니다. 가입 화면과 서버가 같은 규칙을 사용하며, 공백이나 한글 글자는 특수문자로 인정하지 않습니다. 가입 API도 `password_confirmation`을 필수로 받으며 누락·불일치를 거부합니다. 확인용 비밀번호는 저장하지 않습니다. 기존 계정과 관리자 로그인에는 신규 가입 규칙을 소급 적용하지 않습니다.
-
-가입 유형에서 `현장 팀원`은 기존 현장을 선택해 승인 신청합니다. `현장담당자 · 새 현장 생성 요청`은 현장이 아직 없어도 새 현장명을 제출할 수 있습니다. 관리자는 `설정 → 승인 설정 → 현장 생성 요청`에서 승인·반려합니다. 승인 시 현장 생성·승인된 담당자 배정·이력을 함께 저장하며, 승인 전이나 반려 후에는 현장 권한을 부여하지 않습니다. 신청자는 자신의 처리 상태만 조회하며 전역 관리자 권한을 받지 않습니다. `0003_site_creation_requests.sql`과 이 가입 확장은 운영에 반영했고, 실제 운영 브라우저에서 승인·반려 및 담당자의 팀원 승인까지 확인했습니다.
-
-인증 코드는 `auth.ts`로 분리되어 있고 `password_hash`는 nullable이므로 향후 Google OAuth 계정을 수용할 수 있습니다. Google OAuth 자체는 아직 구현하지 않았습니다. 원격 사용자 발급에는 운영용 provisioning 도구를 사용합니다.
+5. 리소스 대상이 맞는지 다시 확인한 후 migration과 최초 관리자 발급을 수행합니다. 빈 DB에도 `0001`부터 `0004`까지 모두 필요하며, 기존 설치 업그레이드 시에는 먼저 DB를 백업합니다.
 
 ```sh
-node scripts/create-user.mjs --email name@company.com --name "사용자 이름" --remote
-node scripts/create-user.mjs --email admin@company.com --name "관리자 이름" --admin --remote
+npm run db:remote
+node scripts/create-user.mjs --email owner@example.com --name "서비스 운영자" --admin --remote
+npm run deploy
 ```
 
-`--company`, `--department`도 선택할 수 있습니다. `--remote`를 생략하면 로컬 D1에만 발급합니다. 무작위 비밀번호는 stdout에 출력하지 않고 Git에서 제외된 `.wrangler/accounts/{uuid}.json`에 권한 0600으로 저장합니다. 발급 결과가 `pending`이면 원격 DB 상태를 확인하기 전 무작정 재시도하지 않습니다. 로그인 정보는 사용자에게 안전한 경로로 전달하고, 로컬 `test:seed`를 운영 발급에 사용하지 않습니다.
+`owner@example.com`은 **본인의 로그인 이메일**로 교체하세요. 관리자 생성은 이메일 발송이나 클라우드 계정 연동이 아닙니다. 배포에 성공하면 Wrangler가 출력한 **자신의 서비스 URL**을 사용합니다.
 
-배포환경 관리자 1명과 검증용 사용자 2명을 발급하고 원격 관리자 API 로그인·로그아웃 200을 확인했습니다. 비밀번호는 Git에서 제외된 0600 파일로만 전달하며 이 문서에 포함하지 않습니다. 원격 시험은 `E2E_BASE_URL`과 별도 `E2E_CREDENTIALS_FILE`을 사용합니다.
+6. 다음 절의 서버 암호화 키를 등록한 뒤 관리자 화면에서 OpenAI 키를 저장합니다.
+7. 사용자 지정 도메인은 자신의 DNS에서 해당 Worker에 연결합니다. 현 구현의 운영 도메인은 Cloudflare에서 별도 관리하며 `wrangler.jsonc`에 `routes`가 없습니다. 이 저장소를 배포해도 기존 운영자의 도메인은 새 계정에 연결되지 않습니다.
 
-## Web Push VAPID 설정
+## 3. 설치자가 관리자로 로그인하기
 
-사용자 단말의 알림 허용 동작으로 Service Worker Push 구독을 생성합니다. 구독은 D1에 보관하고 현재 방이 보이지 않는 알림 활성 참여자에게 발송합니다. 지원 endpoint를 검증하고 VAPID 서명·RFC 8291 암호화를 사용합니다.
+현재 구현의 초기 관리자 생성 도구는 [create-user.mjs](scripts/create-user.mjs)입니다. 위 명령의 `--admin`이 앱의 전역 관리자 역할을 부여합니다. `--remote`가 없으면 **로컬 DB에만** 생성되므로 운영 주소에서는 로그인할 수 없습니다.
+
+- 비밀번호는 강한 무작위 값으로 생성되며 stdout에 출력하지 않습니다.
+- 생성 결과에 표시된 `.wrangler/accounts/{uuid}.json`을 안전한 로컬 편집기로 열어 `email`, `password`, `role: "admin"`, `status: "created"`를 확인합니다. 파일 권한은 0600이고 Git에서 제외됩니다.
+- 자신의 배포 URL에서 이 이메일·비밀번호로 로그인하면 관리자가 됩니다. 기본 관리자 ID·공통 비밀번호·웹의 최초 관리자 설치 마법사는 없습니다.
+- 결과가 `pending`이면 대상 DB의 생성 여부부터 확인하세요. 중복 이메일 재발급이나 무작정 재실행으로 비밀번호를 바꾸지 않습니다.
+- 비밀번호 변경·분실 복구 UI와 이메일 발송은 현재 없습니다. 생성된 로그인 정보는 안전하게 보관하고, 수동 복구 시에는 대상 DB와 세션 무효화를 함께 검토해야 합니다.
+- 다른 플랫폼으로 이식하면 이 도구의 D1 호출도 해당 DB용으로 바꿔야 합니다. 공용 가입 API를 관리자 생성용으로 열면 안 됩니다.
+
+**일반 가입자는 최초 가입자라도 관리자가 되지 않습니다.** 담당자 가입은 현장 생성 요청만 등록하고 관리자 승인 후 담당자가 됩니다. 담당자는 자신의 현장 팀원 가입을 승인하며, 관리자는 현장·담당자·팀원 전체 승인과 팀원의 담당자 승격을 관리합니다.
+
+관리자 로그인 후 `설정 → 승인 설정`에서 현장 등록·사용자 배정 또는 현장 생성 요청 승인·반려를 진행합니다. 관리자 권한과 현장담당자 역할은 별개입니다. CLI로 발급한 일반 계정도 관리자의 현장 배정이 필요합니다.
+
+## 4. 서버 비밀값과 관리자 API 설정
+
+[.env.example](.env.example)은 변수명 참고용이며 실제 키를 넣어 커밋하면 안 됩니다. 로컬 실행에서는 `.dev.vars`, 운영에서는 선택한 플랫폼의 서버 Secret 저장소를 사용합니다. `.env` 파일이 자동으로 모든 플랫폼에 배포되는 구조가 아닙니다.
+
+| 항목 | 필요 시점 / 등록 위치 |
+|---|---|
+| `AI_SETTINGS_ENCRYPTION_KEY` | 관리자 API 키 저장에 필수. 독립적인 무작위 32바이트 Base64 값, 서버 Secret |
+| OpenAI API 키 | AI 요약에 필요. **관리자 `설정 → AI 요약 설정`에서 저장**. 모든 현장 요약이 공통 사용 |
+| 요약 모델 | 같은 관리자 화면에서 선택. API 프로젝트에서 사용 가능한 모델인지 별도 확인 |
+| `OPENAI_API_KEY` | 선택적 서버 fallback. DB에 관리자 설정이 **없을 때만** 사용; 권장 설치 경로에서는 중복 등록 불필요 |
+| `OPENAI_MODEL` | 선택적 서버 기본값. DB 저장 모델이 우선 |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Push 사용 시 서버에 등록. OpenAI와 별개이며 관리자 AI 입력란에 넣지 않음 |
+| 배포 토큰·계정 ID | 선택한 플랫폼/CI에만 등록. 앱 사용자 비밀번호·AI 키와 별개 |
+
+### 암호화 키 준비
+
+기존 생성기를 재사용합니다. 파일이 있으면 덮어쓰지 않고 실패하므로 이미 설정한 환경에서는 다시 만들지 마세요.
+
+```sh
+node scripts/ai-encryption-key.mjs
+```
+
+키는 `.wrangler/secrets/ai-settings-encryption.key`에 0600으로 저장됩니다. 현재 배포 예시에서는 Worker 생성 후 다음과 같이 등록합니다. 쉘 인자나 채팅에 키 원문을 넣지 않습니다.
+
+```sh
+npx wrangler secret put AI_SETTINGS_ENCRYPTION_KEY < .wrangler/secrets/ai-settings-encryption.key
+```
+
+다른 플랫폼에서는 **같은 변수명과 동일한 값**을 그 플랫폼의 Secret 저장소에 등록해야 합니다. DB에 저장된 API 키는 이 키로 암호화되므로, 키를 분실·임의 교체하면 복호화할 수 없습니다. DB와 함께 별도 안전한 저장소에 백업하세요. 개발용 키와 운영용 키는 분리합니다. 로컬 관리자 화면에서 API 설정을 시험할 때는 별도 개발용 키를 `.dev.vars`의 `AI_SETTINGS_ENCRYPTION_KEY`에 넣고 로컬 서버를 다시 시작합니다.
+
+### 관리자 화면에서 OpenAI 등록
+
+1. 자신의 배포 주소에 관리자로 로그인 → `설정 → AI 요약 설정`.
+2. 암호화 준비 상태를 확인하고, 자신의 OpenAI API 프로젝트에서 발급한 API 키를 입력합니다.
+3. 사용할 요약 모델을 선택 → `AI 설정 저장`.
+4. 등록 상태를 확인합니다. 저장된 키 원문은 다시 표시하지 않으며 키 입력을 비워 저장하면 기존 키를 유지합니다.
+
+ChatGPT 로그인 정보·구독과 OpenAI API 프로젝트의 키·과금은 구분해야 합니다. 키 발급·API 사용 권한·과금은 [OpenAI API 안내](https://platform.openai.com/docs/quickstart)에서 확인하세요. 앱에 표시되는 모델 목록이 해당 프로젝트의 사용 권한을 보장하지는 않습니다.
+
+설정 저장은 API 연결·잔액·실제 요약 성공을 확인하는 호출이 아닙니다. 실제 요약 시 사용료가 발생하며, DB의 키 복호화 실패 시 fallback 키로 우회하지 않습니다. API 키를 프런트엔드 `VITE_` 변수·localStorage·공개 저장소에 넣지 마세요.
+
+### 자동요약 예약과 열람
+
+`설정 → 자동요약 예약`에서 현장담당자는 승인된 자기 현장, 관리자는 전체 현장의 예약을 변경합니다. 기본값은 **ON**이고 매일 23:50 한국시간에 **종료된 대화만** 처리합니다. 진행 중인 대화는 자동 종료하지 않습니다.
+
+OFF이면 대기·재시도 작업은 보류되고 ON이면 다음 예약에 처리됩니다. 토글 저장 자체는 AI를 호출하지 않지만 이미 시작된 API 요청은 완료될 수 있습니다. 완료된 요약과 원문은 OFF에서도 조회할 수 있습니다.
+
+승인된 현장 직원은 `현장 대화 요약`에서 요약 검색과 `대화 원문 열람`을 사용할 수 있습니다. 원문은 읽기 전용이며 대화방 참여 권한을 추가하지 않습니다.
+
+## 5. 선택 기능: Web Push
 
 ```sh
 node scripts/vapid.mjs
 ```
 
-키는 콘솔에 출력하지 않고 Git에서 제외된 `.wrangler/vapid.env`에 권한 0600으로 저장합니다. 파일이 이미 있으면 덮어쓰지 않고 실패합니다. 해당 값을 안전한 로컬 환경/Cloudflare Secrets의 `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`로 등록하고 `VAPID_SUBJECT`를 별도 설정하세요. 이 파일은 자동으로 Worker에 주입되지 않습니다. subject는 관리 가능한 연락처의 `mailto:` 주소 또는 HTTPS URL입니다. 기존 Push 구독은 애플리케이션 서버 키에 연결되므로 운영 중 키를 변경하면 재구독이 필요합니다.
-
-실제 Push는 브라우저·OS 권한과 HTTPS가 필요합니다. 로컬 예외 origin 동작과 실제 HTTPS 배포 동작을 각각 검증해야 합니다. 지원하지 않는 브라우저에서는 UI가 상태를 표시합니다. iOS 등 설치·권한 조건이 있는 환경은 해당 기기에서 최종 확인해야 합니다.
-
-배포 Worker에는 `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` 세 Secret 이름 등록을 확인했습니다. Secret 등록은 실제 Push 수신 성공의 증거가 아닙니다.
-
-## Cloudflare Secrets 설정
-
-값을 채팅이나 소스 파일에 붙여 넣지 않고, 안전한 로컬 터미널의 Wrangler 입력으로 등록합니다.
+자기 서비스용 VAPID 키가 `.wrangler/vapid.env`에 0600으로 생성됩니다. 기존 파일은 덮어쓰지 않습니다. 현재 배포 예시에서는 다음처럼 두 키를 등록하고, 연락 가능한 `mailto:` 주소 또는 HTTPS URL을 `VAPID_SUBJECT`로 입력합니다.
 
 ```sh
-npx wrangler secret put OPENAI_API_KEY
-npx wrangler secret put VAPID_PUBLIC_KEY
-npx wrangler secret put VAPID_PRIVATE_KEY
+npx wrangler secret bulk .wrangler/vapid.env
 npx wrangler secret put VAPID_SUBJECT
 ```
 
-`OPENAI_MODEL`은 공개 설정이며 `wrangler.jsonc`에 지정합니다. `.dev.vars`, `.env*`, `.wrangler/`는 Git 제외 대상입니다. 공개 예시 파일 `.env.example`에는 빈 변수명만 둡니다. 배포 토큰은 GitHub Actions Secrets로 보관하고 클라이언트 빌드 변수로 전달하지 않습니다.
+다른 플랫폼에서도 같은 키 쌍과 subject를 서버 비밀값으로 설정해야 합니다. 생성 파일은 자동 주입되지 않습니다. 등록 후 브라우저의 `설정 → 프로필·알림`에서 알림을 허용하고 구독합니다. 해당 방을 보고 있지 않은 알림 활성 참여자가 대상입니다.
 
-## Cron 설정
+HTTPS·Service Worker·OS/브라우저 권한이 필요하며, 모바일 설치 조건은 기기에서 확인해야 합니다. 도메인이나 VAPID 키를 바꾸면 재로그인·재구독이 필요할 수 있습니다. Secret 등록이나 구독 저장만으로 실제 단말 Push 수신이 검증되지는 않습니다.
 
-설정값 `50 14 * * *`는 UTC 14:50, 한국 시간 매일 23:50입니다. 실행 시 아직 보관되지 않은 종료 방과 재시도 가능한 실패 작업을 처리합니다. 당일 마지막 실행 이후 종료된 방은 다음 실행에서 처리됩니다.
+## 6. 자동 배포를 사용하는 경우
 
-로컬에서 `--test-scheduled`로 실행 중일 때:
+자신의 저장소와 CI 자격증명을 사용합니다. **현재 [.github/workflows/deploy.yml](.github/workflows/deploy.yml)의 deploy job은 Cloudflare 예시 구현**이며 범용 배포 job이 아닙니다.
 
-```sh
-curl 'http://127.0.0.1:8787/__scheduled'
-```
+- 원본이 아닌 자신의 저장소에 push합니다. `main` push/수동 실행은 시험 성공 후 실제 운영 DB migration·배포를 수행할 수 있습니다.
+- Cloudflare 예시를 사용할 때는 자신의 GitHub `production` environment에 `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`를 등록하고, `wrangler.jsonc`의 계정·리소스와 일치시킵니다. 토큰은 해당 작업에 필요한 최소 리소스 권한·만료일로 제한합니다.
+- `Verify production endpoints`의 **기존 운영 URL 두 개를 반드시 자신의 health URL로 교체**하세요. 사용자 지정 도메인이 없으면 그 주소 검사는 제거하고 자신의 기본 주소를 검사합니다. 기존 주소의 200 응답은 새 설치 성공 증거가 아닙니다.
+- 다른 플랫폼을 선택했다면 현재 deploy job을 비활성화하거나 자신의 migration·배포·health 검사로 교체합니다. 이 저장소에는 그 플랫폼용 workflow가 아직 없습니다.
+- GitHub environment의 승인 규칙, DB 백업, 배포 후 실제 로그인·WebSocket 확인을 적용합니다. CI가 성공했다는 표시는 어떤 저장소·커밋·환경을 검증했는지와 함께 확인해야 합니다.
 
-Cron에는 세션·rate-limit 만료 데이터 정리도 포함됩니다. 테스트 scheduled endpoint는 로컬 개발 도구의 기능이며 공개 관리자 API로 구현하지 않았습니다.
+새 기능은 로컬 검증 → 운영 DB 백업 → 추가 migration → 배포 → 수용 확인 순서로 반영합니다. 배포된 migration은 수정하지 않습니다. 구버전 코드는 새 권한 또는 예약 OFF를 무시할 수 있으므로 무조건적인 코드·DB 전체 롤백은 안전하지 않습니다.
 
-## OpenAI API 및 Markdown Archive
+## 7. 설치 완료 수용 확인
 
-Cloudflare와 별도의 OpenAI API 사용 권한·과금 설정이 필요합니다. 현재 기본 모델은 설정 파일의 `gpt-4.1-mini`이며 저장된 관리자 설정이 우선합니다. 초기 실제 요약 요청은 HTTP 429(`credit_balance_exhausted` / `insufficient_quota`)로 실패했습니다. 이후 관리자가 새 공통 API 키를 DB에 등록했지만, 이번 모델 카탈로그 배포에서는 유료 호출을 하지 않았으므로 새 키의 잔액·모델 접근 권한·실제 요약 성공을 입증하지 않습니다. 성공한 실제 요약·Cron→R2 아카이브는 별도 검증이 필요합니다. 키 원문은 소스·문서·로그에 기록하거나 GitHub에 푸시하지 않습니다.
+다음 항목을 **자기 배포 환경**에서 확인해야 설치 완료입니다.
 
-키 미설정 환경에서는 작업의 시도 횟수를 소비하지 않고 처리를 건너뜁니다. 키가 있지만 API에서 과금 오류를 반환하는 경우는 실패 작업이므로, 설정 후에도 계정 잔액·권한을 확인해야 합니다.
+- [ ] 자기 URL의 HTTPS·`/api/health` 정상, 로컬이 아닌 새 운영 DB 사용 확인
+- [ ] 발급한 설치자 계정 로그인 → 관리자 승인 설정·AI 설정 접근 가능
+- [ ] 일반 가입자는 관리자 API 접근 차단, 담당자/팀원 승인 전 현장 접근 차단
+- [ ] 현장 생성 요청 → 관리자 승인·반려, 담당자의 팀원 승인·관리자의 승격 동작
+- [ ] 두 계정의 실시간 대화·재연결 복구·첨부 다운로드·종료 후 쓰기 차단
+- [ ] 서버 암호화 키 백업 및 관리자 공통 API 키 등록, 키 원문 비노출
+- [ ] 담당자 예약 OFF→ON 저장과 재조회, 사용료 확인 후 종료된 대화의 실제 예약 요약→비공개 파일 보관
+- [ ] 승인된 현장 직원의 요약 검색·읽기 전용 원문 열람
+- [ ] Push를 쓴다면 실제 기기의 알림 수신·로그아웃 후 격리 확인
 
-AI는 요약·결정사항·Action Items·키워드만 생성합니다. 원문, 방 목적, 종료 결론·담당자·기한·메모는 코드가 직접 Markdown에 작성합니다. OpenAI에는 `store:false`와 구조화된 응답 형식을 요청하며, 실패·거부·불완전 응답을 성공으로 처리하지 않습니다.
+키 등록 성공, 정적 페이지 표시, 로컬 시험, 다른 운영 서비스의 health는 이 확인을 대신하지 않습니다. 외부 API 오류가 나도 원문은 DB에 보존되며 잔액·권한 확인 없이 유료 요청을 반복하지 마세요.
 
-현재 작업은 한 번에 최대 10개, 작업당 최대 5회 시도하며 lease로 중복 Cron 실행을 제어합니다. 긴 대화는 모든 메시지·첨부 metadata를 여러 구간으로 나누고, JSON escape와 Responses 요청 envelope를 포함한 직렬화된 요청 문자열을 요청당 250,000 UTF-16 코드 단위 이내로 검사합니다. 이는 앱 자체의 문자열 길이 예산이며 250KB/UTF-8 byte 한도나 OpenAI API의 제한을 의미하지 않습니다. 구간 요약은 `[구간 i/N]`로 연결하고 결정사항·Action Items·키워드는 중복을 제거합니다. 추가 AI 병합 호출은 하지 않습니다. 원문 Markdown에는 전체 대화를 그대로 보존합니다.
+## 문제 해결
 
-작업당 8분, Cron 한 번당 12분의 처리 예산을 적용하고 각 구간 호출 전에 lease 소유권을 다시 확인합니다. 어느 구간이든 실패하면 불완전한 결과를 R2에 저장하거나 done으로 표시하지 않습니다. 공유 문맥 또는 단일 기록 자체가 한도를 넘거나 시간 예산·5회 시도를 소진하면 실패로 남으므로 원인 수정 후 관리자의 재처리가 필요합니다.
-
-## GitHub → Cloudflare 배포 방법
-
-비공개 GitHub 저장소 [seominpapa/sitetalk](https://github.com/seominpapa/sitetalk)의 수정 커밋 `c87e53b`에 대한 [Actions 실행](https://github.com/seominpapa/sitetalk/actions/runs/34743470826)은 설치·타입검사·단위시험·빌드·전체 브라우저 시험을 통과했습니다. 해당 과거 실행의 deploy job은 `Cloudflare API token is not configured`로 중단됐습니다. 이후 Wrangler로 원격 migration·최초 Worker 배포를 완료했지만 이는 자동 배포가 아닙니다. GitHub에는 `CLOUDFLARE_ACCOUNT_ID`를 등록했고 `CLOUDFLARE_API_TOKEN`은 아직 없어 CI/CD 전체는 미완료입니다. 토큰에는 선택한 계정에서 Worker 배포·D1 migration 등 워크플로가 실제 사용하는 최소 권한을 부여합니다.
-
-`.github/workflows/deploy.yml`은 PR과 main push에서 의존성 설치 → typecheck → 단위·통합 시험 → build → 로컬 D1·테스트 사용자 준비 → 브라우저 E2E를 실행합니다. main push 또는 main에서 실행한 workflow_dispatch는 시험 성공 뒤 `production` environment에서 원격 migration → Worker 배포를 수행합니다. 토큰·account ID 누락과 D1 자리표시자는 배포 전에 실패합니다. GitHub의 production environment 승인 규칙이 있다면 그 규칙도 적용됩니다. 워크플로 파일 존재나 로컬 build 성공만으로 자동 배포 성공을 판정하지 않습니다.
-
-수동으로 동일 산출물을 배포할 때:
-
-```sh
-npm run typecheck
-npm test
-npm run db:remote
-npm run deploy
-```
-
-원격 배포 후 두 명의 독립 세션에서 전체 수용 시나리오를 실행하고, Push 수신·첨부 다운로드·OpenAI 호출·R2 아카이브 객체를 확인해야 합니다.
-
-## Database Migration 방법
-
-새 변경은 `database/migrations`에 번호가 증가하는 SQL 파일로 추가합니다. 배포한 migration을 수정해 재적용하지 않습니다.
-
-```sh
-npm run db:local
-npm run db:remote
-```
-
-D1 batch를 사용해 메시지·첨부 metadata, 종료 정보·archive job을 함께 저장합니다. SQL FK·unique·CHECK 제약과 종료 방 INSERT trigger가 적용됩니다. 날짜 기한은 `YYYY-MM-DD`, timestamp는 epoch millisecond 정수입니다. 원격 migration 전에는 실제 대상 DB와 데이터 보존 계획을 확인합니다.
-
-## Troubleshooting
-
-| 증상 | 확인할 사항 |
+| 증상 | 먼저 확인 |
 |---|---|
-| 로그인 실패 | 로컬 테스트 계정 파일, 대상 origin, 세션 쿠키, 사용자 발급 여부. 연속 실패 시 rate limit을 기다립니다. |
-| Worker 시작 시 assets 오류 | `npm run build`로 `dist` 생성 여부를 확인합니다. |
-| D1 바인딩·테이블 오류 | `DB` 바인딩, 실제 database ID, 해당 환경 migration 적용 여부를 확인합니다. |
-| R2 배포 오류 | R2 활성화·버킷 이름·계정 권한을 확인합니다. 로컬 에뮬레이션 성공은 원격 활성화 증거가 아닙니다. |
-| 실시간 연결 반복 끊김 | WebSocket 경로·Vite proxy·로그인 만료·탭 수 제한·네트워크 상태를 확인합니다. |
-| 업로드 실패 | 파일당 20MB, 빈 파일 여부, 네트워크·R2 상태를 확인합니다. 재시도 후 중복 여부도 확인합니다. |
-| 알림 미수신 | OS/브라우저 권한, Service Worker, VAPID 3종 설정, 구독 저장, 현재 방 visibility를 확인합니다. |
-| Archive pending | 키 설정·Cron 실행·종료 상태를 확인합니다. |
-| Archive failed | HTTP 오류·모델 권한·입력 크기·5회 재시도 한도를 확인합니다. 원문은 D1에 남습니다. |
-| OpenAI 429 / credit_balance_exhausted | API 계정의 잔액·과금 상태를 확인합니다. 현재 확인된 원인은 insufficient_quota이며 충전 전 반복 호출하지 않습니다. |
-| 다운로드 404 | 파일 존재 여부와 방 참여 권한을 확인합니다. 비참여자에게도 내용을 노출하지 않습니다. |
+| 클론·push 권한 오류 | 공개 원본은 읽기 전용으로 클론 가능. 자신의 변경은 fork한 저장소에 push |
+| 운영 로그인 실패 | 관리자 파일의 `created` 상태·이메일·비밀번호, `--remote` 여부, DB·접속 주소 일치, 로그인 제한 |
+| 관리자 메뉴 없음 | 공개 가입이 아니라 `--admin`으로 발급했는지 확인. 현장담당자는 전역 관리자가 아님 |
+| API 키 저장 불가 | 서버 `AI_SETTINGS_ENCRYPTION_KEY` 형식·등록 여부, 전체 migration, 관리자 로그인 |
+| 요약 대기/실패 | 현장 예약 ON, 대화 종료, 실제 Cron, 모델 접근 권한·API 과금·재시도 상태 |
+| 첨부·실시간 실패 | 비공개 객체 저장소, WebSocket 프록시·인증·HTTPS, 파일당 20MB 한도 |
+| 알림 미수신 | VAPID 3종·구독·Service Worker·단말 권한·현재 방 표시 여부 |
+| 정적 호스팅에서 화면만 나옴 | 전체 백엔드와 `/api`·WebSocket 라우팅이 필요한데 `dist`만 배포하지 않았는지 확인 |
 
-운영 확인에는 `npx wrangler tail`과 Cloudflare 대시보드 로그를 사용합니다. API 키·세션 토큰·Push endpoint 토큰·메시지 본문을 로그에 추가하지 마세요.
+## 구조·검증 기록
 
-## 검증 상태와 제외 범위
+```text
+apps/web/                React·Vite UI / PWA
+apps/worker/src/         현재 Worker 백엔드·인증·방별 실시간 처리·요약
+packages/shared/        타입·API 클라이언트·가입 정책
+database/migrations/    SQLite/D1 migration
+scripts/                관리자 발급·로컬 시험 계정·암호화/VAPID 키 생성
+tests/                  단위·통합·브라우저 시험
+docs/                   진행 기록·수용 기준
+```
 
-2026-09-13 최종 검증: `npm test` 33/33, `npm run typecheck`, `npm run build`, 확장된 브라우저 E2E 전체 4/4(6.7초)가 통과했습니다. 로컬 Worker/D1/R2 에뮬레이터에서 두 사용자 실시간 메시지, 실제 WebSocket 종료·offline 중 55개 메시지·재연결 후 전체 순서 복구, Shift+Enter, 합성 clipboard 이미지·확대·drag/drop, PDF 다운로드, MIME 위장 파일 다운로드 강제, 검색, 종료·쓰기 차단, 읽음 위치, 초대 권한을 확인했습니다. 브라우저 Push unsubscribe가 실패해도 서버 로그아웃은 완료되도록 RED→GREEN으로 검증했습니다.
+현재 구현의 시험 결과·배포 이력은 [진행 기록](docs/progress.md)과 [수용 기준](docs/acceptance.md)을 확인하세요. 기존 운영 환경에서 통과한 시험은 새 설치나 다른 플랫폼의 배포 보증이 아닙니다. 운영 사용자 데이터·비밀번호·API 키·DB 백업은 저장소에 포함하지 않습니다.
 
-최초 GitHub E2E에서 느린 방 목록 갱신이 다음 메시지 전송 잠금을 유지하는 경합을 발견했습니다. 메시지 저장 응답 이후 목록 갱신을 비동기로 분리했고, 목록 응답 1.5초 지연 회귀 검사를 포함한 로컬 전체 E2E 4/4(6.4초), 단위·통합 시험 33/33, typecheck·build를 다시 통과했습니다. 수정 커밋의 GitHub 테스트 job도 통과했으며 배포 job만 인증 설정 부족으로 중단됐습니다.
+## 라이선스
 
-Cloudflare 배포환경에서도 브라우저 E2E 전체 4/4(3.0분)를 통과했습니다. 두 사용자 채팅·55개 재연결 복구·이미지/PDF 공유·검색·종료·권한·로그아웃을 실제 원격 D1/R2/DO에서 확인했습니다. 최초 원격 실행은 55개 순차 요청의 각 약 1.3초 왕복으로 첫 시험의 90초 예산을 초과했습니다. HTTPS 첫 시험만 총 180초로 늘리고 기능 assertion을 유지해 재검증했으며 429는 없었습니다.
+Site Talk의 코드와 문서는 [MIT License](LICENSE)로 제공합니다. 저작권·허가 고지를 유지하면 사용·수정·재배포·상업적 이용이 가능합니다. 보증은 제공하지 않습니다. 외부 의존성은 각 패키지의 라이선스를 따르며, 호스팅·OpenAI API 등의 이용 약관과 사용료는 별도입니다. `package.json`의 `private: true`는 실수로 npm에 게시하는 것을 막는 설정으로 GitHub 공개 여부와는 무관합니다.
 
-합성 ClipboardEvent는 실제 OS Cmd+V 검증을 대신하지 않습니다. `npm audit`은 취약점 0건이며 GitHub 테스트 job, 실제 Cloudflare migration·배포·health 200·원격 E2E를 확인했습니다. 실제 Push 수신·성공한 실제 OpenAI/Cron/R2 아카이브는 아직 없습니다. CI/CD 전체 성공과 전체 코드 80% coverage 달성도 입증되지 않았습니다. 일부 Push/Archive 시험의 coverage를 전체 앱 coverage로 해석하지 않습니다.
-
-음성·영상 통화, RAG, Vector DB, 번역·OCR, 문서 분석, AI 챗봇, 결재·일정·Todo, Tauri·네이티브 앱은 MVP 범위에 포함하지 않습니다.
+공식 자료: [Cloudflare Workers](https://developers.cloudflare.com/workers/), [Wrangler 명령](https://developers.cloudflare.com/workers/wrangler/commands/), [OpenAI API](https://platform.openai.com/docs/overview).
