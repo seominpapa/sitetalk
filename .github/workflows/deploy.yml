@@ -26,6 +26,8 @@ jobs:
       - run: npm run db:local
       - run: npm run test:seed
       - run: npm run test:e2e
+      - name: Verify portable Docker installation
+        run: npm run test:docker
   deploy:
     needs: test
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

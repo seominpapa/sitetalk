@@ -18,7 +18,7 @@ test('Docker runtime is pinned, non-root and ships the complete app without deve
 test('Compose keeps persistent data and secrets separate from the read-only image and binds only loopback by default', () => {
   const compose = read('compose.yaml');
   assert.match(compose, /127\.0\.0\.1:\$\{SITE_TALK_PORT:-3000\}:3000/);
-  assert.match(compose, /env_file:\s*\n\s*- \.env\.docker/);
+  assert.match(compose, /env_file:\s*\n\s*- \$\{SITE_TALK_ENV_FILE:-\.env\.docker\}/);
   assert.match(compose, /site-talk-data:\/data/);
   assert.match(compose, /read_only: true/);
   assert.match(compose, /init: true/);

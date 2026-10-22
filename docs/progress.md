@@ -200,3 +200,16 @@
 - `da177bd` main push의 Actions `39568805673`에서 단위·통합 112개·브라우저 26개 통과(운영 opt-in 2건 제외). Worker 코드·assets·기존 주소·Cron은 배포됐으나 Custom Domain 갱신 API가 code 10002로 실패했습니다. 최초 등록 후 재시도도 같은 결과로, 이를 자동 배포 전체 성공으로 보고하지 않습니다.
 - 충돌 미리보기 재확인 후 기존 Cloudflare 로그인으로 새 도메인만 등록했습니다. 기존 DNS/다른 origin 덮어쓰기는 false로 강제했으며 같은 Worker 연결·활성 인증서를 확인했습니다. Cloudflare 공개 DNS와 Google DNS의 A 응답 및 해당 주소로 인증서 검증을 유지한 HTTPS health 200을 확인했습니다. 이 컴퓨터의 이전 NXDOMAIN 캐시는 별도입니다.
 - 최소 조정: 도메인은 Cloudflare Custom Domain으로 유지하고 Wrangler `routes` 선언만 제거합니다. 설치된 Wrangler의 trigger 배포 코드를 확인해 custom-domain 목록이 비어 있으면 해당 갱신 API를 호출하지 않음을 확인했습니다. CI에 기존·신규 주소 health 확인을 추가해 연결 실패를 숨기지 않습니다. 토큰 권한·Secret은 변경하지 않습니다. 조정 커밋의 CI 및 운영 UI 결과는 후속 비공개 릴리스 기록으로 확인합니다.
+
+## 2026-10-22 — 범용 Docker 배포 구현·로컬 실동작 검증
+
+- 요청/범위: Cloudflare 외 클라우드 VM·VPS·일반 서버에서 Docker로 새 독립 설치할 수 있도록 구현했습니다. 기존 Worker 경로는 유지하며, 이번에는 운영 DB·Secret·도메인·배포·GitHub push를 변경하지 않았습니다.
+- 구현: 인증·가입 승인·요약 API와 대화 업무 로직을 공유하고, Node HTTP/WebSocket 서버·SQLite migration/원자적 batch·비공개 파일 저장소·일일 예약 실행을 연결했습니다. `ws`만 직접 실행 의존성으로 추가했으며 Cloudflare 계정·SDK·Wrangler는 Docker 실행에 필요하지 않습니다.
+- 패키징/설치: 버전·digest 고정 Node 24 Linux 이미지, 비루트 사용자, 읽기 전용 루트, 영구 named volume, loopback 포트, health check를 제공합니다. 설치자는 비공개 CLI로 자신의 관리자 계정·무작위 비밀번호를 발급하고 `설정 → AI 요약 설정`에서 공통 API를 등록합니다. README에 HTTPS 프록시·키 백업·업데이트·복구·선택적 Push 및 시험 명령을 안내했습니다.
+- TDD: 누락된 서버/저장소와 Docker 구성의 실패를 먼저 확인한 로컬 checkpoint `36504c6`, `3707b0c` 이후 구현했습니다. 첫 화면 404, 예약 tick 중복 경합, 데이터/정적 자산 경로 중첩 및 Docker context 우선순위는 실패 시험 후 수정했습니다. 브라우저 시험의 중복 상태 메시지와 select label 선택자도 실제 접근성 역할을 사용하도록 보정했습니다.
+- 단위/통합: `npm test` **134/134**, 타입 검사·Vite 빌드·diff 검사 성공, `npm audit` 취약점 **0건**. 새 Node 서버 대상 17개 시험은 line **96.02%**, branch **86.84%**, function **82.19%**를 확인했습니다. 전체 앱 coverage라는 의미는 아닙니다.
+- 실제 Docker: macOS Docker Desktop의 **Linux arm64 / Node 24.22.1** 컨테이너를 소스에서 빌드하고 새 DB migration·관리자 발급부터 브라우저 시험 **1/1**(6.0초)을 통과했습니다. 관리자 API 키 저장·키 원문 비노출·현장 생성 승인·담당자의 팀원 승인·비관리자 403·두 브라우저 WebSocket 대화·PDF 원본 bytes·대화 종료 후 409를 확인했습니다. 같은 volume으로 컨테이너를 재생성한 뒤 계정 3명·대화·PDF·암호화된 API 설정·예약 OFF 보존을 API로 재확인했습니다. 시험 전용 프로젝트·이미지·volume·임시 로그인 파일은 정상 정리했습니다.
+- 요약 경로: Node 서버 통합 시험에서 저장한 공통 키가 모의 Responses API에 전달되고, 예약 tick → 요약 검색 → 원문 열람 → 비공개 Markdown 다운로드까지 연결됨을 확인했습니다. Docker 브라우저 시험은 가짜 키를 사용하고 예약을 OFF로 유지하므로 실제 유료 호출은 하지 않습니다.
+- Cloudflare 회귀: 기존 로컬 Worker 브라우저 **26/26** 통과(운영 전용 opt-in 2개 제외), Worker deploy dry-run 성공. CI의 시험 job에 격리된 Docker 신규 설치/영속성 시험을 추가했으나, 원격 Actions 실행이나 실제 cloud VM 배포는 하지 않았습니다.
+- 보안 검토: 독립 읽기 전용 검토에서 WebSocket upgrade 인증·소속 확인, 파일/DB 경계, 원자적 저장, 비밀값 출력 방지를 확인했습니다. 거절된 upgrade가 정적 파일 스트림을 남기던 누수를 수정하고 실제 probe 15회 후 열린 핸들 증가 0을 확인했습니다. 공개 자산/비공개 DB 경로 중첩을 차단하고 시험 도구는 remote Docker context를 거부·검증한 local endpoint로 고정합니다.
+- 제한/미검증: Docker는 **단일 프로세스·단일 인스턴스·로컬 영구 디스크**만 지원합니다. NFS·replica·Cloudflare 데이터 자동 이전은 미구현입니다. 역방향 프록시 뒤 로그인 제한은 프록시 IP 단위로 공유되며 임의 전달 IP 헤더를 신뢰하지 않습니다. 실제 클라우드 VM/HTTPS 인증서, Linux amd64 실기동, 실제 유료 OpenAI·정시 예약·단말 Push는 별도 검증이 필요합니다. 강제 종료는 시험 리소스의 정상 cleanup을 건너뛸 수 있습니다.

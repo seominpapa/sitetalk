@@ -4,6 +4,8 @@ dist/
 .dev.vars*
 .env*
 !.env.example
+!.env.docker.example
+/data/
 playwright-report/
 test-results/
 coverage/
